@@ -1,75 +1,72 @@
 resource "aws_vpc" "main" {
-  cidr_block           = var.vpc_cidr_block
-  enable_dns_support   = true
+  cidr_block           = var.vpc_cidr
   enable_dns_hostnames = true
+  enable_dns_support   = true
 
   tags = {
-    Name      = var.vpc_name
-    ManagedBy = "Terraform"
+    Name                                        = "${var.environment}-vpc"
+    Environment                                 = var.environment
+    "kubernetes.io/cluster/${var.environment}-cluster" = "shared"
   }
 }
 
-# Public subnets
-resource "aws_subnet" "public" {
-  count = length(var.public_subnets)
+resource "aws_internet_gateway" "main" {
+  vpc_id = aws_vpc.main.id
 
-  vpc_id                  = aws_vpc.main.id
-  cidr_block              = var.public_subnets[count.index]
-  availability_zone       = var.availability_zones[count.index]
+  tags = {
+    Name        = "${var.environment}-igw"
+    Environment = var.environment
+  }
+}
+
+resource "aws_subnet" "public" {
+  count             = length(var.public_subnets)
+  vpc_id            = aws_vpc.main.id
+  cidr_block        = var.public_subnets[count.index]
+  availability_zone = var.availability_zones[count.index]
+
   map_public_ip_on_launch = true
 
   tags = {
-    Name      = "${var.vpc_name}-public-${count.index + 1}"
-    Type      = "Public"
-    ManagedBy = "Terraform"
+    Name                                        = "${var.environment}-public-subnet-${count.index + 1}"
+    Environment                                 = var.environment
+    "kubernetes.io/role/elb"                    = "1"
+    "kubernetes.io/cluster/${var.environment}-cluster" = "shared"
   }
 }
 
-# Private subnets
 resource "aws_subnet" "private" {
-  count = length(var.private_subnets)
-
+  count             = length(var.private_subnets)
   vpc_id            = aws_vpc.main.id
   cidr_block        = var.private_subnets[count.index]
   availability_zone = var.availability_zones[count.index]
 
   tags = {
-    Name      = "${var.vpc_name}-private-${count.index + 1}"
-    Type      = "Private"
-    ManagedBy = "Terraform"
+    Name                                        = "${var.environment}-private-subnet-${count.index + 1}"
+    Environment                                 = var.environment
+    "kubernetes.io/role/internal-elb"           = "1"
+    "kubernetes.io/cluster/${var.environment}-cluster" = "shared"
   }
 }
 
-# Internet Gateway for public subnets
-resource "aws_internet_gateway" "main" {
-  vpc_id = aws_vpc.main.id
-
-  tags = {
-    Name      = "${var.vpc_name}-igw"
-    ManagedBy = "Terraform"
-  }
-}
-
-# Elastic IP for NAT Gateway
 resource "aws_eip" "nat" {
+  count  = length(var.public_subnets)
   domain = "vpc"
 
   tags = {
-    Name      = "${var.vpc_name}-nat-eip"
-    ManagedBy = "Terraform"
+    Name        = "${var.environment}-nat-eip-${count.index + 1}"
+    Environment = var.environment
   }
-
-  depends_on = [aws_internet_gateway.main]
 }
 
-# NAT Gateway in the first public subnet
 resource "aws_nat_gateway" "main" {
-  allocation_id = aws_eip.nat.id
-  subnet_id     = aws_subnet.public[0].id
+  count         = length(var.public_subnets)
+  allocation_id = aws_eip.nat[count.index].id
+  subnet_id     = aws_subnet.public[count.index].id
 
   tags = {
-    Name      = "${var.vpc_name}-nat"
-    ManagedBy = "Terraform"
+    Name        = "${var.environment}-nat-${count.index + 1}"
+    Environment = var.environment
   }
 
   depends_on = [aws_internet_gateway.main]

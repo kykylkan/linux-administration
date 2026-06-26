@@ -1,140 +1,272 @@
-# Lesson 5 — Terraform Infrastructure on AWS
+# Lesson 7 — Kubernetes (EKS) + ECR + Helm
 
-This project provisions core AWS infrastructure using Terraform with a modular structure.
-It covers remote state management, networking, and container registry setup.
+Розгортання Django-застосунку на AWS EKS за допомогою Terraform та Helm.
 
----
-
-## Project Structure
+## Структура проєкту
 
 ```
-lesson-5/
-├── main.tf          # Root module — wires all submodules together
-├── backend.tf       # Remote state configuration (S3 + DynamoDB)
-├── variables.tf     # Root-level variables
-├── outputs.tf       # Aggregated outputs from all modules
-├── README.md
-│
-└── modules/
-    ├── s3-backend/  # S3 bucket + DynamoDB for state storage & locking
-    │   ├── s3.tf
-    │   ├── dynamodb.tf
-    │   ├── variables.tf
-    │   └── outputs.tf
-    │
-    ├── vpc/         # VPC with public/private subnets, IGW, NAT Gateway
-    │   ├── vpc.tf
-    │   ├── routes.tf
-    │   ├── variables.tf
-    │   └── outputs.tf
-    │
-    └── ecr/         # Elastic Container Registry repository
-        ├── ecr.tf
-        ├── variables.tf
-        └── outputs.tf
+lesson-7/
+├── main.tf
+├── backend.tf
+├── variables.tf
+├── outputs.tf
+├── terraform.tfvars
+├── modules/
+│   ├── s3-backend/      # S3 bucket + DynamoDB для стейтів
+│   ├── vpc/             # VPC, підмережі, IGW, NAT
+│   ├── ecr/             # Elastic Container Registry
+│   └── eks/             # EKS кластер + Node Group
+└── charts/
+    └── django-app/
+        ├── Chart.yaml
+        ├── values.yaml
+        └── templates/
+            ├── configmap.yaml
+            ├── deployment.yaml
+            ├── service.yaml
+            ├── hpa.yaml
+            └── ingress.yaml  # бонус
 ```
 
 ---
 
-## Modules
+## Передумови
 
-### `s3-backend`
-Creates an S3 bucket for storing Terraform state files and a DynamoDB table for state locking.
-
-| Resource | Description |
-|---|---|
-| `aws_s3_bucket` | Versioned, encrypted bucket with public access blocked |
-| `aws_dynamodb_table` | PAY_PER_REQUEST table with `LockID` hash key |
-
-**Key features:**
-- Versioning enabled — full history of state files
-- AES256 server-side encryption
-- All public access blocked
-- `prevent_destroy` lifecycle guard on the bucket
+- AWS CLI налаштований (`aws configure`)
+- Terraform >= 1.5.0
+- kubectl
+- Helm >= 3.x
+- Docker
 
 ---
 
-### `vpc`
-Creates a VPC with 3 public and 3 private subnets spread across 3 Availability Zones.
+## Крок 1 — Ініціалізація S3 backend (перший запуск)
 
-| Resource | Description |
-|---|---|
-| `aws_vpc` | Main VPC with DNS support enabled |
-| `aws_subnet` (public ×3) | Auto-assign public IP, one per AZ |
-| `aws_subnet` (private ×3) | No public IP, one per AZ |
-| `aws_internet_gateway` | Provides internet access for public subnets |
-| `aws_eip` | Elastic IP for the NAT Gateway |
-| `aws_nat_gateway` | Allows private subnets to reach the internet |
-| `aws_route_table` (public) | Routes `0.0.0.0/0` → Internet Gateway |
-| `aws_route_table` (private) | Routes `0.0.0.0/0` → NAT Gateway |
-
----
-
-### `ecr`
-Creates an Elastic Container Registry repository for storing Docker images.
-
-| Resource | Description |
-|---|---|
-| `aws_ecr_repository` | Repository with scan-on-push and AES256 encryption |
-| `aws_ecr_lifecycle_policy` | Removes untagged images beyond the last 10 |
-| `aws_ecr_repository_policy` | Grants the current AWS account full access |
-
----
-
-## Prerequisites
-
-- [Terraform](https://developer.hashicorp.com/terraform/downloads) >= 1.5.0
-- AWS CLI configured (`aws configure`)
-- IAM permissions for S3, DynamoDB, VPC, ECR
-
----
-
-## First-time Bootstrap
-
-> **Important:** The S3 bucket and DynamoDB table used by `backend.tf` must exist **before** you can use them as a backend. On the very first run, comment out `backend.tf`, apply to create the resources, then uncomment and run `terraform init -migrate-state`.
-
----
-
-## Usage
-
-### Initialize
+> Перший раз backend ще не існує, тому запускаємо без нього:
 
 ```bash
+cd lesson-7
+
+# Тимчасово закоментувати блок terraform { backend "s3" ... } у backend.tf
 terraform init
+terraform apply -target=module.s3_backend
+
+# Розкоментувати backend.tf і перенести стейт
+terraform init -migrate-state
 ```
 
-### Preview changes
+---
+
+## Крок 2 — Розгортання всієї інфраструктури
 
 ```bash
-terraform plan
+terraform plan -out=tfplan
+terraform apply tfplan
 ```
 
-### Apply infrastructure
+Після успішного apply отримаємо:
+- ID нашого VPC
+- URL ECR репозиторію
+- Назву та endpoint EKS кластера
 
 ```bash
-terraform apply
+terraform output
 ```
 
-### Destroy all resources
+---
+
+## Крок 3 — Налаштування kubectl
 
 ```bash
+aws eks update-kubeconfig \
+  --region eu-central-1 \
+  --name django-cluster
+
+# Перевірка
+kubectl get nodes
+```
+
+---
+
+## Крок 4 — Завантаження Docker-образу до ECR
+
+```bash
+# Змінні
+AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+AWS_REGION="eu-central-1"
+ECR_URL="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/django-app"
+
+# Авторизація
+aws ecr get-login-password --region ${AWS_REGION} | \
+  docker login --username AWS --password-stdin ${ECR_URL}
+
+# Збірка та push образу
+docker build -t django-app .
+docker tag django-app:latest ${ECR_URL}:latest
+docker push ${ECR_URL}:latest
+```
+
+---
+
+## Крок 5 — Розгортання через Helm
+
+```bash
+# Підставити URL свого ECR репозиторію
+ECR_URL=$(terraform output -raw ecr_repository_url)
+
+helm upgrade --install django-app ./charts/django-app \
+  --namespace production \
+  --create-namespace \
+  --set image.repository=${ECR_URL} \
+  --set image.tag=latest \
+  --wait
+```
+
+### Перевірка розгортання
+
+```bash
+# Pods
+kubectl get pods -n production
+
+# Service (зовнішній IP)
+kubectl get svc -n production
+
+# HPA
+kubectl get hpa -n production
+
+# ConfigMap
+kubectl get configmap -n production
+kubectl describe configmap django-app-config -n production
+
+# Логи
+kubectl logs -l app=django-app -n production --tail=50
+```
+
+---
+
+## Крок 6 — Перевірка застосунку
+
+```bash
+# Отримати зовнішній IP LoadBalancer
+EXTERNAL_IP=$(kubectl get svc django-app-service -n production \
+  -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+
+echo "App URL: http://${EXTERNAL_IP}"
+curl -I http://${EXTERNAL_IP}/health/
+```
+
+---
+
+## Бонус — Ingress + TLS (cert-manager)
+
+### Встановлення cert-manager
+
+```bash
+helm repo add jetstack https://charts.jetstack.io
+helm repo update
+
+helm install cert-manager jetstack/cert-manager \
+  --namespace cert-manager \
+  --create-namespace \
+  --set installCRDs=true
+```
+
+### ClusterIssuer для Let's Encrypt
+
+```bash
+kubectl apply -f - <<EOF
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-prod
+spec:
+  acme:
+    server: https://acme-v02.api.letsencrypt.org/directory
+    email: your@email.com
+    privateKeySecretRef:
+      name: letsencrypt-prod
+    solvers:
+      - http01:
+          ingress:
+            class: nginx
+EOF
+```
+
+### Встановлення NGINX Ingress Controller
+
+```bash
+helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx
+helm repo update
+helm install ingress-nginx ingress-nginx/ingress-nginx \
+  --namespace ingress-nginx \
+  --create-namespace
+```
+
+### Helm з увімкненим Ingress
+
+```bash
+helm upgrade --install django-app ./charts/django-app \
+  --namespace production \
+  --set image.repository=${ECR_URL} \
+  --set image.tag=latest \
+  --set ingress.enabled=true \
+  --set ingress.host=yourdomain.com \
+  --set ingress.tls=true \
+  --wait
+```
+
+---
+
+## Корисні команди
+
+```bash
+# Helm статус
+helm status django-app -n production
+
+# Helm список релізів
+helm list -n production
+
+# Перегляд rendered templates (без деплою)
+helm template django-app ./charts/django-app --set image.repository=test
+
+# Видалення релізу
+helm uninstall django-app -n production
+
+# Знищення всієї інфраструктури
 terraform destroy
 ```
 
-> ⚠️ `terraform destroy` will also delete the S3 bucket and DynamoDB table used for state storage. Back up your state file before destroying if you plan to recreate the infrastructure later.
+---
+
+## Змінні середовища (ConfigMap)
+
+Усі env-змінні передаються через `values.yaml` → `ConfigMap` → Deployment (`envFrom`).
+
+| Змінна | Опис |
+|--------|------|
+| `DEBUG` | Режим відлагодження Django |
+| `DJANGO_SETTINGS_MODULE` | Модуль налаштувань |
+| `ALLOWED_HOSTS` | Дозволені хости |
+| `DATABASE_HOST` | Хост PostgreSQL |
+| `DATABASE_PORT` | Порт PostgreSQL |
+| `DATABASE_NAME` | Назва БД |
+| `DATABASE_USER` | Користувач БД |
+| `REDIS_URL` | URL Redis (кеш) |
+| `CELERY_BROKER_URL` | URL брокера Celery |
+
+> **Увага:** Секретні значення (паролі, ключі) передавайте через Kubernetes Secret або AWS Secrets Manager, а не через ConfigMap.
 
 ---
 
-## Outputs
+## HPA — Автомасштабування
 
-| Output | Description |
-|---|---|
-| `s3_bucket_name` | Name of the Terraform state S3 bucket |
-| `s3_bucket_arn` | ARN of the S3 bucket |
-| `dynamodb_table_name` | Name of the DynamoDB lock table |
-| `vpc_id` | ID of the created VPC |
-| `public_subnet_ids` | List of public subnet IDs |
-| `private_subnet_ids` | List of private subnet IDs |
-| `internet_gateway_id` | ID of the Internet Gateway |
-| `ecr_repository_url` | Full URL of the ECR repository |
-| `ecr_repository_arn` | ARN of the ECR repository |
+HPA налаштований на масштабування від **2 до 6 подів** при навантаженні CPU **> 70%**.
+
+```bash
+# Симуляція навантаження для тесту HPA
+kubectl run load-test --image=busybox -n production -- \
+  sh -c "while true; do wget -q -O- http://django-app-service/; done"
+
+# Спостереження за масштабуванням
+kubectl get hpa -n production -w
+```

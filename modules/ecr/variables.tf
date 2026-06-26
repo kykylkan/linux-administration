@@ -1,10 +1,9 @@
-variable "ecr_name" {
-  description = "Name of the ECR repository"
+variable "repository_name" {
+  description = "ECR repository name"
   type        = string
 }
 
-variable "scan_on_push" {
-  description = "Enable automatic vulnerability scanning when images are pushed"
-  type        = bool
-  default     = true
+variable "environment" {
+  description = "Environment name"
+  type        = string
 }

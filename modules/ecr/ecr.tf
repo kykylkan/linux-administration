@@ -1,9 +1,9 @@
-resource "aws_ecr_repository" "main" {
-  name                 = var.ecr_name
+resource "aws_ecr_repository" "django_app" {
+  name                 = var.repository_name
   image_tag_mutability = "MUTABLE"
 
   image_scanning_configuration {
-    scan_on_push = var.scan_on_push
+    scan_on_push = true
   }
 
   encryption_configuration {
@@ -11,64 +11,28 @@ resource "aws_ecr_repository" "main" {
   }
 
   tags = {
-    Name      = var.ecr_name
-    ManagedBy = "Terraform"
+    Name        = var.repository_name
+    Environment = var.environment
+    ManagedBy   = "Terraform"
   }
 }
 
-# Lifecycle policy: keep last 10 untagged images, remove older ones
-resource "aws_ecr_lifecycle_policy" "main" {
-  repository = aws_ecr_repository.main.name
+resource "aws_ecr_lifecycle_policy" "django_app" {
+  repository = aws_ecr_repository.django_app.name
 
   policy = jsonencode({
     rules = [
       {
         rulePriority = 1
-        description  = "Remove untagged images older than 10 kept"
+        description  = "Keep last 10 images"
         selection = {
-          tagStatus   = "untagged"
+          tagStatus   = "any"
           countType   = "imageCountMoreThan"
           countNumber = 10
         }
         action = {
           type = "expire"
         }
-      }
-    ]
-  })
-}
-
-# Repository policy: allow current AWS account full access
-data "aws_caller_identity" "current" {}
-
-resource "aws_ecr_repository_policy" "main" {
-  repository = aws_ecr_repository.main.name
-
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Sid    = "AllowCurrentAccountAccess"
-        Effect = "Allow"
-        Principal = {
-          AWS = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:root"
-        }
-        Action = [
-          "ecr:GetDownloadUrlForLayer",
-          "ecr:BatchGetImage",
-          "ecr:BatchCheckLayerAvailability",
-          "ecr:PutImage",
-          "ecr:InitiateLayerUpload",
-          "ecr:UploadLayerPart",
-          "ecr:CompleteLayerUpload",
-          "ecr:DescribeRepositories",
-          "ecr:GetRepositoryPolicy",
-          "ecr:ListImages",
-          "ecr:DeleteRepository",
-          "ecr:BatchDeleteImage",
-          "ecr:SetRepositoryPolicy",
-          "ecr:DeleteRepositoryPolicy"
-        ]
       }
     ]
   })

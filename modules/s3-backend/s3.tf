@@ -1,19 +1,17 @@
 resource "aws_s3_bucket" "terraform_state" {
   bucket = var.bucket_name
 
-  # Prevent accidental deletion of state bucket
+  tags = {
+    Name        = var.bucket_name
+    Environment = var.environment
+    ManagedBy   = "Terraform"
+  }
+
   lifecycle {
     prevent_destroy = true
   }
-
-  tags = {
-    Name        = var.bucket_name
-    Purpose     = "Terraform State Storage"
-    ManagedBy   = "Terraform"
-  }
 }
 
-# Enable versioning to preserve state history
 resource "aws_s3_bucket_versioning" "terraform_state" {
   bucket = aws_s3_bucket.terraform_state.id
 
@@ -22,7 +20,6 @@ resource "aws_s3_bucket_versioning" "terraform_state" {
   }
 }
 
-# Encrypt state files at rest
 resource "aws_s3_bucket_server_side_encryption_configuration" "terraform_state" {
   bucket = aws_s3_bucket.terraform_state.id
 
@@ -33,7 +30,6 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "terraform_state" 
   }
 }
 
-# Block all public access to the state bucket
 resource "aws_s3_bucket_public_access_block" "terraform_state" {
   bucket = aws_s3_bucket.terraform_state.id
 
