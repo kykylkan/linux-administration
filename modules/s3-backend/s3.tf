@@ -1,27 +1,28 @@
-resource "aws_s3_bucket" "terraform_state" {
+resource "aws_s3_bucket" "tf_state" {
   bucket = var.bucket_name
+
+  lifecycle {
+    prevent_destroy = false
+  }
 
   tags = {
     Name        = var.bucket_name
+    Project     = var.project_name
     Environment = var.environment
-    ManagedBy   = "Terraform"
-  }
-
-  lifecycle {
-    prevent_destroy = true
+    Purpose     = "terraform-state"
   }
 }
 
-resource "aws_s3_bucket_versioning" "terraform_state" {
-  bucket = aws_s3_bucket.terraform_state.id
+resource "aws_s3_bucket_versioning" "tf_state" {
+  bucket = aws_s3_bucket.tf_state.id
 
   versioning_configuration {
     status = "Enabled"
   }
 }
 
-resource "aws_s3_bucket_server_side_encryption_configuration" "terraform_state" {
-  bucket = aws_s3_bucket.terraform_state.id
+resource "aws_s3_bucket_server_side_encryption_configuration" "tf_state" {
+  bucket = aws_s3_bucket.tf_state.id
 
   rule {
     apply_server_side_encryption_by_default {
@@ -30,8 +31,8 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "terraform_state" 
   }
 }
 
-resource "aws_s3_bucket_public_access_block" "terraform_state" {
-  bucket = aws_s3_bucket.terraform_state.id
+resource "aws_s3_bucket_public_access_block" "tf_state" {
+  bucket = aws_s3_bucket.tf_state.id
 
   block_public_acls       = true
   block_public_policy     = true

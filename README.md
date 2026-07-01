@@ -1,272 +1,178 @@
-# Lesson 7 — Kubernetes (EKS) + ECR + Helm
+# Lesson 8-9: Jenkins + Terraform + Helm + Argo CD — повний CI/CD пайплайн
 
-Розгортання Django-застосунку на AWS EKS за допомогою Terraform та Helm.
+Проєкт реалізує наскрізний CI/CD-процес для Django-застосунку на AWS EKS:
+
+```
+Developer push → GitHub (app repo) → Jenkins (Kaniko build) → Amazon ECR
+        → Jenkins оновлює values.yaml у GitOps-репозиторії (git push)
+        → Argo CD виявляє зміну → автоматичний sync → Kubernetes (EKS)
+```
+
+## Схема CI/CD
+
+```
+┌─────────────┐   push   ┌────────────┐   webhook   ┌───────────────────┐
+│  App repo    │ ───────▶ │  GitHub    │ ──────────▶ │      Jenkins       │
+│ (Dockerfile) │          │            │             │  (Kubernetes agent │
+└─────────────┘          └────────────┘             │   Kaniko + Git)    │
+                                                       └─────────┬──────────┘
+                                                                 │ docker build & push
+                                                                 ▼
+                                                       ┌───────────────────┐
+                                                       │   Amazon ECR       │
+                                                       └─────────┬──────────┘
+                                                                 │ update image.tag
+                                                                 ▼
+                                                       ┌───────────────────┐
+                                                       │  GitOps repo       │
+                                                       │  charts/django-app │
+                                                       │  values.yaml       │
+                                                       └─────────┬──────────┘
+                                                                 │ git sync (auto)
+                                                                 ▼
+                                                       ┌───────────────────┐
+                                                       │     Argo CD        │
+                                                       │  Application CR    │
+                                                       └─────────┬──────────┘
+                                                                 │ helm upgrade
+                                                                 ▼
+                                                       ┌───────────────────┐
+                                                       │   EKS (django-app) │
+                                                       └───────────────────┘
+```
 
 ## Структура проєкту
 
 ```
-lesson-7/
-├── main.tf
-├── backend.tf
-├── variables.tf
-├── outputs.tf
-├── terraform.tfvars
+Progect/
+├── main.tf, backend.tf, variables.tf, outputs.tf, versions.tf
+├── Dockerfile               # приклад Dockerfile Django-застосунку
+├── Jenkinsfile               # CI pipeline: build → push ECR → update GitOps repo
 ├── modules/
-│   ├── s3-backend/      # S3 bucket + DynamoDB для стейтів
-│   ├── vpc/             # VPC, підмережі, IGW, NAT
-│   ├── ecr/             # Elastic Container Registry
-│   └── eks/             # EKS кластер + Node Group
+│   ├── s3-backend/          # S3 + DynamoDB для стану Terraform
+│   ├── vpc/                 # VPC, підмережі, NAT/IGW, роутинг
+│   ├── ecr/                 # ECR репозиторій для django-app
+│   ├── eks/                 # EKS кластер, node group, OIDC, EBS CSI driver
+│   ├── jenkins/              # Helm-реліз Jenkins + Kubernetes-агент (Kaniko)
+│   └── argo_cd/              # Helm-реліз Argo CD + Application/Repository chart
 └── charts/
-    └── django-app/
-        ├── Chart.yaml
-        ├── values.yaml
-        └── templates/
-            ├── configmap.yaml
-            ├── deployment.yaml
-            ├── service.yaml
-            ├── hpa.yaml
-            └── ingress.yaml  # бонус
+    └── django-app/           # Helm chart застосунку, за яким слідкує Argo CD
 ```
-
----
 
 ## Передумови
 
-- AWS CLI налаштований (`aws configure`)
-- Terraform >= 1.5.0
-- kubectl
-- Helm >= 3.x
-- Docker
+- Terraform >= 1.5, AWS CLI, kubectl, helm
+- AWS-акаунт з правами на VPC/EKS/ECR/IAM/S3/DynamoDB
+- Git-репозиторій "GitOps" (окремий від репозиторію застосунку), що містить
+  каталог `charts/django-app` — саме за ним стежить Argo CD Application
+  (`var.git_repo_url` у `variables.tf`, за замовчуванням заглушка
+  `https://github.com/<your-account>/lesson-8-9-gitops.git` — замініть на свій)
+- Jenkins credential `gitops-repo-credentials` (username + PAT токен) для push
+  у GitOps-репозиторій — додається вручну в Jenkins UI (Manage Credentials)
+  після першого деплою Jenkins
 
----
+## Як застосувати Terraform
 
-## Крок 1 — Ініціалізація S3 backend (перший запуск)
-
-> Перший раз backend ще не існує, тому запускаємо без нього:
+### 1. Bootstrap стану (S3 + DynamoDB) — один раз
 
 ```bash
-cd lesson-7
-
-# Тимчасово закоментувати блок terraform { backend "s3" ... } у backend.tf
+# Тимчасово закоментуйте блок backend "s3" у backend.tf
 terraform init
 terraform apply -target=module.s3_backend
+```
 
-# Розкоментувати backend.tf і перенести стейт
+### 2. Міграція на віддалений backend
+
+```bash
+# Розкоментуйте backend "s3" у backend.tf
 terraform init -migrate-state
 ```
 
----
-
-## Крок 2 — Розгортання всієї інфраструктури
+### 3. Розгортання решти інфраструктури
 
 ```bash
-terraform plan -out=tfplan
-terraform apply tfplan
+terraform plan
+terraform apply
 ```
 
-Після успішного apply отримаємо:
-- ID нашого VPC
-- URL ECR репозиторію
-- Назву та endpoint EKS кластера
+Це створить (у порядку залежностей): VPC → ECR → EKS (кластер + node group +
+OIDC + EBS CSI addon) → Jenkins (Helm) → Argo CD (Helm) + Argo CD Application.
+
+### 4. Підключення kubectl до кластера
 
 ```bash
-terraform output
-```
-
----
-
-## Крок 3 — Налаштування kubectl
-
-```bash
-aws eks update-kubeconfig \
-  --region eu-central-1 \
-  --name django-cluster
-
-# Перевірка
+aws eks update-kubeconfig --name lesson-8-9 --region eu-central-1
 kubectl get nodes
 ```
 
----
+## Як перевірити Jenkins job
 
-## Крок 4 — Завантаження Docker-образу до ECR
+1. Отримати пароль адміністратора Jenkins:
 
-```bash
-# Змінні
-AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
-AWS_REGION="eu-central-1"
-ECR_URL="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/django-app"
+   ```bash
+   kubectl exec --namespace jenkins -it svc/jenkins -c jenkins -- \
+     /bin/cat /run/secrets/additional/chart-admin-password
+   ```
 
-# Авторизація
-aws ecr get-login-password --region ${AWS_REGION} | \
-  docker login --username AWS --password-stdin ${ECR_URL}
+2. Прокинути порт і відкрити UI:
 
-# Збірка та push образу
-docker build -t django-app .
-docker tag django-app:latest ${ECR_URL}:latest
-docker push ${ECR_URL}:latest
-```
+   ```bash
+   kubectl port-forward svc/jenkins 8080:8080 -n jenkins
+   # http://localhost:8080  (user: admin)
+   ```
 
----
+3. Створити Pipeline job, що вказує на репозиторій із застосунком і
+   `Jenkinsfile` в корені. Додати credential `gitops-repo-credentials`
+   (Manage Jenkins → Credentials) для push у GitOps-репозиторій.
 
-## Крок 5 — Розгортання через Helm
+4. Запустити білд і переконатись, що всі стадії пройшли успішно:
+   `Checkout` → `Build & Push image (Kaniko)` → `Update GitOps repo`.
 
-```bash
-# Підставити URL свого ECR репозиторію
-ECR_URL=$(terraform output -raw ecr_repository_url)
+5. Перевірити, що в ECR з'явився новий тег образу:
 
-helm upgrade --install django-app ./charts/django-app \
-  --namespace production \
-  --create-namespace \
-  --set image.repository=${ECR_URL} \
-  --set image.tag=latest \
-  --wait
-```
+   ```bash
+   aws ecr describe-images --repository-name django-app --region eu-central-1
+   ```
 
-### Перевірка розгортання
+6. Перевірити, що в GitOps-репозиторії з'явився commit з оновленим
+   `image.tag` у `charts/django-app/values.yaml`.
 
-```bash
-# Pods
-kubectl get pods -n production
+## Як побачити результат в Argo CD
 
-# Service (зовнішній IP)
-kubectl get svc -n production
+1. Отримати початковий пароль адміністратора:
 
-# HPA
-kubectl get hpa -n production
+   ```bash
+   kubectl -n argocd get secret argocd-initial-admin-secret \
+     -o jsonpath='{.data.password}' | base64 -d
+   ```
 
-# ConfigMap
-kubectl get configmap -n production
-kubectl describe configmap django-app-config -n production
+2. Прокинути порт і відкрити UI:
 
-# Логи
-kubectl logs -l app=django-app -n production --tail=50
-```
+   ```bash
+   kubectl port-forward svc/argocd-server 8081:80 -n argocd
+   # https://localhost:8081  (user: admin)
+   ```
 
----
+3. У списку Applications знайти `django-app` — Argo CD автоматично виявляє
+   комміт від Jenkins (polling кожні ~3 хв, або миттєво через webhook) і
+   виконує `Sync` (auto-sync увімкнено: `prune: true`, `selfHeal: true`).
 
-## Крок 6 — Перевірка застосунку
+4. Перевірити стан подів застосунку:
 
-```bash
-# Отримати зовнішній IP LoadBalancer
-EXTERNAL_IP=$(kubectl get svc django-app-service -n production \
-  -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+   ```bash
+   kubectl get pods -n django-app
+   kubectl get deployment -n django-app -o wide
+   ```
 
-echo "App URL: http://${EXTERNAL_IP}"
-curl -I http://${EXTERNAL_IP}/health/
-```
+   Образ у деплойменті повинен відповідати останньому тегу, запушеному
+   Jenkins-пайплайном.
 
----
-
-## Бонус — Ingress + TLS (cert-manager)
-
-### Встановлення cert-manager
+## ⚠️ Видалення ресурсів після перевірки
 
 ```bash
-helm repo add jetstack https://charts.jetstack.io
-helm repo update
-
-helm install cert-manager jetstack/cert-manager \
-  --namespace cert-manager \
-  --create-namespace \
-  --set installCRDs=true
-```
-
-### ClusterIssuer для Let's Encrypt
-
-```bash
-kubectl apply -f - <<EOF
-apiVersion: cert-manager.io/v1
-kind: ClusterIssuer
-metadata:
-  name: letsencrypt-prod
-spec:
-  acme:
-    server: https://acme-v02.api.letsencrypt.org/directory
-    email: your@email.com
-    privateKeySecretRef:
-      name: letsencrypt-prod
-    solvers:
-      - http01:
-          ingress:
-            class: nginx
-EOF
-```
-
-### Встановлення NGINX Ingress Controller
-
-```bash
-helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx
-helm repo update
-helm install ingress-nginx ingress-nginx/ingress-nginx \
-  --namespace ingress-nginx \
-  --create-namespace
-```
-
-### Helm з увімкненим Ingress
-
-```bash
-helm upgrade --install django-app ./charts/django-app \
-  --namespace production \
-  --set image.repository=${ECR_URL} \
-  --set image.tag=latest \
-  --set ingress.enabled=true \
-  --set ingress.host=yourdomain.com \
-  --set ingress.tls=true \
-  --wait
-```
-
----
-
-## Корисні команди
-
-```bash
-# Helm статус
-helm status django-app -n production
-
-# Helm список релізів
-helm list -n production
-
-# Перегляд rendered templates (без деплою)
-helm template django-app ./charts/django-app --set image.repository=test
-
-# Видалення релізу
-helm uninstall django-app -n production
-
-# Знищення всієї інфраструктури
 terraform destroy
 ```
 
----
-
-## Змінні середовища (ConfigMap)
-
-Усі env-змінні передаються через `values.yaml` → `ConfigMap` → Deployment (`envFrom`).
-
-| Змінна | Опис |
-|--------|------|
-| `DEBUG` | Режим відлагодження Django |
-| `DJANGO_SETTINGS_MODULE` | Модуль налаштувань |
-| `ALLOWED_HOSTS` | Дозволені хости |
-| `DATABASE_HOST` | Хост PostgreSQL |
-| `DATABASE_PORT` | Порт PostgreSQL |
-| `DATABASE_NAME` | Назва БД |
-| `DATABASE_USER` | Користувач БД |
-| `REDIS_URL` | URL Redis (кеш) |
-| `CELERY_BROKER_URL` | URL брокера Celery |
-
-> **Увага:** Секретні значення (паролі, ключі) передавайте через Kubernetes Secret або AWS Secrets Manager, а не через ConfigMap.
-
----
-
-## HPA — Автомасштабування
-
-HPA налаштований на масштабування від **2 до 6 подів** при навантаженні CPU **> 70%**.
-
-```bash
-# Симуляція навантаження для тесту HPA
-kubectl run load-test --image=busybox -n production -- \
-  sh -c "while true; do wget -q -O- http://django-app-service/; done"
-
-# Спостереження за масштабуванням
-kubectl get hpa -n production -w
-```
+**Порядок відновлення після повного destroy**: оскільки `terraform destroy`
+видаляє також S3-бакет і DynamoDB-таблицю зі стейтом, для наступного
+розгортання потрібно повторити крок **bootstrap** (п.1) заново.

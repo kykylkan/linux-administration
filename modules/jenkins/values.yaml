@@ -1,0 +1,64 @@
+# Helm values для jenkinsci/jenkins, налаштовані під CI/CD пайплайн:
+# Jenkins master + Kubernetes plugin (агенти піднімаються як поди),
+# агент має контейнер kaniko для збірки образів без Docker-daemon.
+
+controller:
+  serviceType: ClusterIP
+  installPlugins:
+    - kubernetes:4230.v0069ce6b_9781
+    - workflow-aggregator:590.v6a_d052e5a_a_b_5
+    - git:5.2.1
+    - configuration-as-code:1670.v564dc8b_982d0
+    - credentials-binding:523.vd859a_4b_122e6
+    - blueocean:1.27.9
+    - amazon-ecr:1.7
+  JCasC:
+    defaultConfig: true
+    configScripts:
+      jenkins-casc-configs: |
+        jenkins:
+          numExecutors: 0
+          clouds:
+            - kubernetes:
+                name: "kubernetes"
+                namespace: "jenkins"
+                jenkinsUrl: "http://jenkins.jenkins.svc.cluster.local:8080"
+                templates:
+                  - name: "kaniko-agent"
+                    label: "kaniko"
+                    containers:
+                      - name: "jnlp"
+                        image: "jenkins/inbound-agent:latest"
+                      - name: "kaniko"
+                        image: "gcr.io/kaniko-project/executor:debug"
+                        command: "/busybox/cat"
+                        ttyEnabled: true
+                      - name: "git"
+                        image: "alpine/git:latest"
+                        command: "/bin/sh -c"
+                        args: "cat"
+                        ttyEnabled: true
+
+  resources:
+    requests:
+      cpu: "500m"
+      memory: "512Mi"
+    limits:
+      cpu: "1"
+      memory: "1Gi"
+
+persistence:
+  enabled: true
+  size: 8Gi
+
+rbac:
+  create: true
+
+serviceAccount:
+  create: false
+  name: jenkins-agent
+
+agent:
+  enabled: true
+  image: "jenkins/inbound-agent"
+  tag: "latest"

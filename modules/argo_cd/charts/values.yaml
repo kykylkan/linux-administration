@@ -1,0 +1,10 @@
+application:
+  name: django-app
+  project: default
+  repoURL: "https://github.com/<your-account>/lesson-8-9-gitops.git"
+  targetRevision: main
+  path: charts/django-app
+  destinationNamespace: django-app
+
+repository:
+  url: "https://github.com/<your-account>/lesson-8-9-gitops.git"

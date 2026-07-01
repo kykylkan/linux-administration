@@ -1,9 +1,11 @@
 variable "repository_name" {
-  description = "ECR repository name"
-  type        = string
+  type = string
+}
+
+variable "project_name" {
+  type = string
 }
 
 variable "environment" {
-  description = "Environment name"
-  type        = string
+  type = string
 }
