@@ -1,106 +1,78 @@
+terraform {
+  required_version = ">= 1.5.0"
+
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = "~> 5.0"
+    }
+  }
+}
+
 provider "aws" {
   region = var.aws_region
 }
 
-# ---------------------------------------------------------------------------
-# S3 backend bootstrap (S3 bucket + DynamoDB lock table для стану Terraform)
-# Виконується один раз окремо від основного backend (див. коментар у backend.tf)
-# ---------------------------------------------------------------------------
-module "s3_backend" {
-  source = "./modules/s3-backend"
+# --- Example 1: standalone RDS PostgreSQL instance -------------------------
+module "rds_postgres" {
+  source = "./modules/rds"
 
-  bucket_name    = "cicd-lesson-8-9-tf-state"
-  dynamodb_table = "cicd-lesson-8-9-tf-locks"
-  project_name   = var.project_name
-  environment    = var.environment
-}
+  name       = "${var.project_name}-rds"
+  use_aurora = false
 
-# ---------------------------------------------------------------------------
-# VPC
-# ---------------------------------------------------------------------------
-module "vpc" {
-  source = "./modules/vpc"
+  engine                  = "postgres"
+  engine_version          = "15.4"
+  parameter_group_family  = "postgres15"
+  instance_class          = "db.t3.medium"
+  multi_az                = false
 
-  project_name          = var.project_name
-  environment           = var.environment
-  vpc_cidr              = var.vpc_cidr
-  public_subnet_cidrs   = var.public_subnet_cidrs
-  private_subnet_cidrs  = var.private_subnet_cidrs
-  azs                   = var.azs
-}
+  vpc_id     = var.vpc_id
+  subnet_ids = var.subnet_ids
 
-# ---------------------------------------------------------------------------
-# ECR
-# ---------------------------------------------------------------------------
-module "ecr" {
-  source = "./modules/ecr"
+  allowed_cidr_blocks        = var.allowed_cidr_blocks
+  allowed_security_group_ids = var.allowed_security_group_ids
 
-  repository_name = var.ecr_repository_name
-  project_name     = var.project_name
-  environment      = var.environment
-}
+  db_port         = 5432
+  db_name         = "app_db"
+  master_username = "app_admin"
+  # master_password left null on purpose -> AWS Secrets Manager generates and manages it
 
-# ---------------------------------------------------------------------------
-# EKS
-# ---------------------------------------------------------------------------
-module "eks" {
-  source = "./modules/eks"
+  allocated_storage     = 20
+  max_allocated_storage = 100
 
-  project_name         = var.project_name
-  environment          = var.environment
-  cluster_version      = var.eks_cluster_version
-  vpc_id               = module.vpc.vpc_id
-  private_subnet_ids   = module.vpc.private_subnet_ids
-  public_subnet_ids    = module.vpc.public_subnet_ids
-  node_instance_types  = var.eks_node_instance_types
-  desired_size         = var.eks_desired_size
-  min_size             = var.eks_min_size
-  max_size             = var.eks_max_size
-}
+  skip_final_snapshot = true
 
-# ---------------------------------------------------------------------------
-# Providers для kubernetes/helm, що використовують дані щойно створеного EKS
-# ---------------------------------------------------------------------------
-provider "kubernetes" {
-  host                   = module.eks.cluster_endpoint
-  cluster_ca_certificate = base64decode(module.eks.cluster_certificate_authority_data)
-  token                  = module.eks.cluster_auth_token
-}
-
-provider "helm" {
-  kubernetes {
-    host                   = module.eks.cluster_endpoint
-    cluster_ca_certificate = base64decode(module.eks.cluster_certificate_authority_data)
-    token                  = module.eks.cluster_auth_token
+  db_parameters = {
+    max_connections = "200"
   }
+
+  tags = var.tags
 }
 
-# ---------------------------------------------------------------------------
-# Jenkins (Helm, через Terraform) + Kubernetes agent (Kaniko + Git)
-# ---------------------------------------------------------------------------
-module "jenkins" {
-  source = "./modules/jenkins"
+# --- Example 2: Aurora PostgreSQL cluster (toggle via use_aurora) ----------
+module "rds_aurora" {
+  source = "./modules/rds"
 
-  namespace     = var.jenkins_namespace
-  project_name  = var.project_name
-  ecr_repo_url  = module.ecr.repository_url
-  aws_region    = var.aws_region
+  name       = "${var.project_name}-aurora"
+  use_aurora = true
 
-  depends_on = [module.eks]
-}
+  engine                  = "aurora-postgresql"
+  engine_version          = "15.4"
+  parameter_group_family  = "aurora-postgresql15"
+  instance_class          = "db.r6g.large"
+  aurora_instance_count   = 2 # 1 writer + 1 reader
 
-# ---------------------------------------------------------------------------
-# Argo CD (Helm, через Terraform) + Application, що стежить за Helm chart
-# ---------------------------------------------------------------------------
-module "argo_cd" {
-  source = "./modules/argo_cd"
+  vpc_id     = var.vpc_id
+  subnet_ids = var.subnet_ids
 
-  namespace          = var.argocd_namespace
-  project_name       = var.project_name
-  git_repo_url       = var.git_repo_url
-  git_repo_revision  = var.git_repo_revision
-  chart_path         = var.django_app_chart_path
-  target_namespace   = "django-app"
+  allowed_cidr_blocks        = var.allowed_cidr_blocks
+  allowed_security_group_ids = var.allowed_security_group_ids
 
-  depends_on = [module.eks]
+  db_port         = 5432
+  db_name         = "app_db"
+  master_username = "app_admin"
+
+  skip_final_snapshot = true
+
+  tags = var.tags
 }
