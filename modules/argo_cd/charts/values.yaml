@@ -1,0 +1,15 @@
+repoURL: https://github.com/<your-github-username>/<your-repo>.git
+targetRevision: main
+
+repositories:
+  - name: final-project
+    url: https://github.com/<your-github-username>/<your-repo>.git
+
+applications:
+  - name: django-app
+    path: charts/django-app
+    namespace: default
+    syncPolicy:
+      automated:
+        prune: true
+        selfHeal: true

@@ -1,78 +1,104 @@
-terraform {
-  required_version = ">= 1.5.0"
+data "aws_eks_cluster" "this" {
+  name       = module.eks.cluster_name
+  depends_on = [module.eks]
+}
 
-  required_providers {
-    aws = {
-      source  = "hashicorp/aws"
-      version = "~> 5.0"
-    }
+data "aws_eks_cluster_auth" "this" {
+  name       = module.eks.cluster_name
+  depends_on = [module.eks]
+}
+
+provider "kubernetes" {
+  host                   = data.aws_eks_cluster.this.endpoint
+  cluster_ca_certificate = base64decode(data.aws_eks_cluster.this.certificate_authority[0].data)
+  token                  = data.aws_eks_cluster_auth.this.token
+}
+
+provider "helm" {
+  kubernetes {
+    host                   = data.aws_eks_cluster.this.endpoint
+    cluster_ca_certificate = base64decode(data.aws_eks_cluster.this.certificate_authority[0].data)
+    token                  = data.aws_eks_cluster_auth.this.token
   }
 }
 
-provider "aws" {
-  region = var.aws_region
+# ---------------------------------------------------------------------------
+# S3 + DynamoDB backend for Terraform state (bootstrap once with a local
+# backend, then migrate state to S3 - see README "Bootstrap order").
+# ---------------------------------------------------------------------------
+module "s3_backend" {
+  source       = "./modules/s3-backend"
+  project_name = var.project_name
+  tags         = var.tags
 }
 
-# --- Example 1: standalone RDS PostgreSQL instance -------------------------
-module "rds_postgres" {
-  source = "./modules/rds"
-
-  name       = "${var.project_name}-rds"
-  use_aurora = false
-
-  engine                  = "postgres"
-  engine_version          = "15.4"
-  parameter_group_family  = "postgres15"
-  instance_class          = "db.t3.medium"
-  multi_az                = false
-
-  vpc_id     = var.vpc_id
-  subnet_ids = var.subnet_ids
-
-  allowed_cidr_blocks        = var.allowed_cidr_blocks
-  allowed_security_group_ids = var.allowed_security_group_ids
-
-  db_port         = 5432
-  db_name         = "app_db"
-  master_username = "app_admin"
-  # master_password left null on purpose -> AWS Secrets Manager generates and manages it
-
-  allocated_storage     = 20
-  max_allocated_storage = 100
-
-  skip_final_snapshot = true
-
-  db_parameters = {
-    max_connections = "200"
-  }
-
-  tags = var.tags
+module "vpc" {
+  source                = "./modules/vpc"
+  project_name          = var.project_name
+  vpc_cidr               = var.vpc_cidr
+  public_subnet_cidrs   = var.public_subnet_cidrs
+  private_subnet_cidrs  = var.private_subnet_cidrs
+  azs                   = var.azs
+  tags                  = var.tags
 }
 
-# --- Example 2: Aurora PostgreSQL cluster (toggle via use_aurora) ----------
-module "rds_aurora" {
-  source = "./modules/rds"
+module "ecr" {
+  source          = "./modules/ecr"
+  repository_name = var.ecr_repository_name
+  tags            = var.tags
+}
 
-  name       = "${var.project_name}-aurora"
-  use_aurora = true
+module "eks" {
+  source              = "./modules/eks"
+  project_name        = var.project_name
+  cluster_version     = var.eks_cluster_version
+  vpc_id              = module.vpc.vpc_id
+  private_subnet_ids  = module.vpc.private_subnet_ids
+  public_subnet_ids   = module.vpc.public_subnet_ids
+  node_instance_types = var.eks_node_instance_types
+  node_desired_size   = var.eks_node_desired_size
+  node_min_size       = var.eks_node_min_size
+  node_max_size       = var.eks_node_max_size
+  tags                = var.tags
+}
 
-  engine                  = "aurora-postgresql"
-  engine_version          = "15.4"
-  parameter_group_family  = "aurora-postgresql15"
-  instance_class          = "db.r6g.large"
-  aurora_instance_count   = 2 # 1 writer + 1 reader
+module "rds" {
+  source            = "./modules/rds"
+  project_name      = var.project_name
+  engine            = var.db_engine
+  db_name           = var.db_name
+  db_username       = var.db_username
+  db_password       = var.db_password
+  instance_class    = var.db_instance_class
+  vpc_id            = module.vpc.vpc_id
+  private_subnet_ids = module.vpc.private_subnet_ids
+  eks_node_sg_id    = module.eks.node_security_group_id
+  tags              = var.tags
 
-  vpc_id     = var.vpc_id
-  subnet_ids = var.subnet_ids
+  depends_on = [module.eks]
+}
 
-  allowed_cidr_blocks        = var.allowed_cidr_blocks
-  allowed_security_group_ids = var.allowed_security_group_ids
+module "jenkins" {
+  source     = "./modules/jenkins"
+  namespace  = "jenkins"
+  tags       = var.tags
 
-  db_port         = 5432
-  db_name         = "app_db"
-  master_username = "app_admin"
+  depends_on = [module.eks]
+}
 
-  skip_final_snapshot = true
+module "argo_cd" {
+  source      = "./modules/argo_cd"
+  namespace   = "argocd"
+  repo_url    = var.argocd_repo_url
+  target_revision = "main"
 
-  tags = var.tags
+  depends_on = [module.eks]
+}
+
+module "monitoring" {
+  source    = "./modules/monitoring"
+  namespace = "monitoring"
+  tags      = var.tags
+
+  depends_on = [module.eks]
 }

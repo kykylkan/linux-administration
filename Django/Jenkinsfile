@@ -1,0 +1,108 @@
+pipeline {
+    agent {
+        kubernetes {
+            label 'django-build-agent'
+            defaultContainer 'docker'
+            yaml """
+apiVersion: v1
+kind: Pod
+spec:
+  containers:
+  - name: docker
+    image: docker:24-dind
+    securityContext:
+      privileged: true
+    tty: true
+  - name: awscli
+    image: amazon/aws-cli:2.15.0
+    command: ['cat']
+    tty: true
+  - name: helm
+    image: alpine/helm:3.14.4
+    command: ['cat']
+    tty: true
+"""
+        }
+    }
+
+    environment {
+        AWS_REGION      = 'eu-central-1'
+        ECR_REPO        = credentials('ecr-repo-url')
+        IMAGE_TAG       = "${env.GIT_COMMIT.take(7)}"
+        ARGOCD_APP_NAME = 'django-app'
+    }
+
+    options {
+        timestamps()
+        disableConcurrentBuilds()
+    }
+
+    stages {
+        stage('Checkout') {
+            steps {
+                checkout scm
+            }
+        }
+
+        stage('Lint & Unit Tests') {
+            steps {
+                sh '''
+                    cd Django/app
+                    pip install --no-cache-dir -r requirements.txt
+                    python manage.py test || true
+                '''
+            }
+        }
+
+        stage('Build Image') {
+            steps {
+                sh """
+                    docker build -t \$ECR_REPO:\$IMAGE_TAG -t \$ECR_REPO:latest -f Django/Dockerfile Django
+                """
+            }
+        }
+
+        stage('Push to ECR') {
+            steps {
+                container('awscli') {
+                    sh '''
+                        aws ecr get-login-password --region $AWS_REGION \
+                          | docker login --username AWS --password-stdin $ECR_REPO
+                    '''
+                }
+                sh '''
+                    docker push $ECR_REPO:$IMAGE_TAG
+                    docker push $ECR_REPO:latest
+                '''
+            }
+        }
+
+        stage('Update Helm values & sync via Argo CD') {
+            steps {
+                container('helm') {
+                    withCredentials([string(credentialsId: 'db-password', variable: 'DB_PASSWORD')]) {
+                        sh '''
+                            helm upgrade --install django-app ./charts/django-app \
+                              --namespace default --create-namespace \
+                              --set image.repository=$ECR_REPO \
+                              --set image.tag=$IMAGE_TAG \
+                              --set secrets.dbPassword=$DB_PASSWORD
+                        '''
+                    }
+                }
+            }
+        }
+    }
+
+    post {
+        success {
+            echo "Deployed ${env.ECR_REPO}:${env.IMAGE_TAG} successfully."
+        }
+        failure {
+            echo 'Pipeline failed - check stage logs above.'
+        }
+        always {
+            sh 'docker system prune -f || true'
+        }
+    }
+}

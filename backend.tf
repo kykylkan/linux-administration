@@ -1,13 +1,30 @@
-# Remote state backend. Fill in a bucket/table that already exist
-# (e.g. created by the modules/s3-backend module from an earlier lesson)
-# or comment this block out entirely to use local state while testing.
-
 terraform {
+  required_version = ">= 1.5.0"
+
   backend "s3" {
-    bucket         = "REPLACE_WITH_YOUR_STATE_BUCKET"
-    key            = "lesson-db-module/terraform.tfstate"
+    bucket         = "devops-final-project-tfstate"
+    key            = "final-project/terraform.tfstate"
     region         = "eu-central-1"
-    dynamodb_table = "REPLACE_WITH_YOUR_LOCK_TABLE"
+    dynamodb_table = "devops-final-project-tf-lock"
     encrypt        = true
   }
+
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = "~> 5.0"
+    }
+    kubernetes = {
+      source  = "hashicorp/kubernetes"
+      version = "~> 2.27"
+    }
+    helm = {
+      source  = "hashicorp/helm"
+      version = "~> 2.12"
+    }
+  }
+}
+
+provider "aws" {
+  region = var.aws_region
 }

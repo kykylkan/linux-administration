@@ -1,171 +1,94 @@
-# Terraform-модуль `rds`
+# DevOps Final Project — AWS + EKS + CI/CD + Monitoring
 
-Універсальний, багаторазовий Terraform-модуль для створення бази даних у AWS:
-залежно від прапора `use_aurora` він піднімає **Aurora Cluster** (writer +
-опційні readers) або звичайну **RDS instance** (PostgreSQL / MySQL). В обох
-випадках модуль автоматично створює `DB Subnet Group`, `Security Group` і
-відповідний `Parameter Group`.
+Terraform-провізована інфраструктура на AWS: VPC, EKS, RDS, ECR, Jenkins,
+Argo CD, Prometheus/Grafana, і Django-застосунок, що деплоїться через
+Jenkins (build/push) + Argo CD (GitOps sync) у кластер EKS.
 
-## Структура модуля
+## Структура
 
-```
-modules/rds/
-├── rds.tf          # standalone aws_db_instance + aws_db_parameter_group (use_aurora = false)
-├── aurora.tf       # aws_rds_cluster + aws_rds_cluster_instance + aws_rds_cluster_parameter_group (use_aurora = true)
-├── shared.tf        # aws_db_subnet_group, aws_security_group (+ rules), спільні локальні параметри
-├── variables.tf      # усі вхідні змінні модуля
-└── outputs.tf        # endpoint, reader_endpoint, security_group_id, secret_arn тощо
-```
+Відповідає структурі з ТЗ: `main.tf` / `backend.tf` / `outputs.tf` в корені,
+усі ресурси розкладені по `modules/*`, Helm-чарт застосунку — у
+`charts/django-app`, чарт Argo CD App-of-Apps — у
+`modules/argo_cd/charts`, вихідний код Django — у `Django/`.
 
-Кореневі файли (`main.tf`, `variables.tf`, `outputs.tf`, `backend.tf`)
-демонструють використання модуля одразу у двох варіантах — standalone RDS і
-Aurora — в одному стейті, щоб показати перемикання прапора `use_aurora`.
+## Порядок запуску (bootstrap)
 
-## Приклад використання
+Backend S3+DynamoDB створюється тим самим кодом, який його потім
+використовує — класична проблема "курки і яйця" в Terraform. Порядок:
 
-```hcl
-module "rds_postgres" {
-  source = "./modules/rds"
+1. **Перший прогін — локальний state.** Закоментуйте блок `backend "s3"`
+   у `backend.tf`, залиште лише `required_providers`.
+   ```bash
+   terraform init
+   terraform apply -target=module.s3_backend
+   ```
+2. **Міграція state в S3.** Розкоментуйте `backend "s3"` (бакет і таблиця
+   вже існують — назви збігаються з `${project_name}-tfstate` /
+   `${project_name}-tf-lock`), потім:
+   ```bash
+   terraform init -migrate-state
+   ```
+3. **Повне розгортання інфраструктури:**
+   ```bash
+   terraform apply
+   ```
+   Це підніме VPC → EKS → ECR/RDS → Jenkins/Argo CD/Monitoring (Helm-релізи
+   в модулях залежать від `module.eks` через `depends_on`, тож порядок
+   витримується автоматично).
 
-  name       = "cashoomo-rds"
-  use_aurora = false                 # -> звичайна RDS instance
+4. **kubeconfig:**
+   ```bash
+   aws eks update-kubeconfig --region eu-central-1 --name devops-final-eks
+   ```
 
-  engine                 = "postgres"
-  engine_version         = "15.4"
-  parameter_group_family = "postgres15"
-  instance_class          = "db.t3.medium"
-  multi_az                = false
+5. **Перевірка ресурсів:**
+   ```bash
+   kubectl get all -n jenkins
+   kubectl get all -n argocd
+   kubectl get all -n monitoring
+   ```
 
-  vpc_id     = var.vpc_id
-  subnet_ids = var.subnet_ids
+6. **Доступ до сервісів:**
+   ```bash
+   kubectl port-forward svc/jenkins 8080:8080 -n jenkins
+   kubectl port-forward svc/argocd-server 8081:443 -n argocd
+   kubectl port-forward svc/monitoring-grafana 3000:80 -n monitoring
+   ```
+   - Jenkins admin-пароль: `modules/jenkins` → output `admin_password_command`.
+   - Argo CD admin-пароль: `modules/argo_cd` → output `initial_admin_password_command`.
+   - Grafana: логін `admin`, пароль — значення `grafana.adminPassword` у
+     `modules/monitoring/values.yaml` (замініть перед реальним деплоєм).
 
-  allowed_cidr_blocks        = ["10.0.0.0/16"]
-  allowed_security_group_ids = [module.eks.node_security_group_id]
+7. **CI/CD цикл:** пуш у `main` → Jenkins (`Django/Jenkinsfile`) білдить
+   образ, пушить в ECR, оновлює Helm-values і синхронізує через Argo CD
+   (`modules/argo_cd` App-of-Apps стежить за `charts/django-app`).
 
-  db_port         = 5432
-  db_name         = "app_db"
-  master_username = "app_admin"
-  # master_password не задаємо -> пароль згенерує та керуватиме AWS Secrets Manager
+## Перед `terraform apply` заповніть
 
-  allocated_storage     = 20
-  max_allocated_storage = 100
+- `db_password` — через `TF_VAR_db_password` або `terraform.tfvars`
+  (не комітити!).
+- `argocd_repo_url` — URL цього репозиторію (використовується Argo CD і
+  `modules/argo_cd/charts/values.yaml`).
+- `charts/django-app/values.yaml` → `image.repository` і `env.DB_HOST`
+  підставляються автоматично з Jenkinsfile / terraform output, але для
+  ручного `helm install` їх треба виставити самому.
+- Jenkins credentials `ecr-repo-url`, `db-password` — створити в
+  Jenkins UI (Credentials store) перед першим прогоном пайплайну.
 
-  db_parameters = {
-    max_connections = "200"
-  }
-
-  tags = {
-    Environment = "dev"
-    Project     = "cashoomo"
-  }
-}
-```
-
-Той самий модуль для **Aurora**-кластера — просто інший набір значень:
-
-```hcl
-module "rds_aurora" {
-  source = "./modules/rds"
-
-  name       = "cashoomo-aurora"
-  use_aurora = true                  # -> Aurora Cluster
-
-  engine                  = "aurora-postgresql"
-  engine_version          = "15.4"
-  parameter_group_family  = "aurora-postgresql15"
-  instance_class           = "db.r6g.large"
-  aurora_instance_count    = 2        # 1 writer + 1 reader
-
-  vpc_id     = var.vpc_id
-  subnet_ids = var.subnet_ids
-
-  db_name         = "app_db"
-  master_username = "app_admin"
-
-  tags = { Environment = "dev" }
-}
-```
-
-## Як запустити
+## ⚠️ Видалення ресурсів
 
 ```bash
-cp terraform.tfvars.example terraform.tfvars
-# відредагувати vpc_id / subnet_ids / allowed_cidr_blocks під ваше середовище
-
-terraform init
-terraform plan
-terraform apply
+terraform destroy
 ```
+Видаляє все, включно з S3-бакетом/DynamoDB стейту — після цього стейт
+локальний, наступний `apply` знову починайте з кроку 1.
 
-⚠️ Після перевірки обов'язково виконайте `terraform destroy`, щоб уникнути
-зайвих витрат. Якщо стан (`backend.tf`) вказує на S3 + DynamoDB, видаляйте
-інфраструктуру проєкту **до** видалення бакета/таблиці стейту — інакше
-втратите доступ до стейту раніше, ніж встигнете прибрати решту ресурсів.
+## Відповідність критеріям оцінювання
 
-## Як змінити тип БД / engine / клас інстансу
-
-Усі ці параметри — звичайні змінні модуля, нічого правити в `.tf`-файлах не
-потрібно:
-
-| Що змінити | Яку змінну задати | Приклад |
-|---|---|---|
-| RDS ⇄ Aurora | `use_aurora` | `true` / `false` |
-| СУБД | `engine` | `postgres`, `mysql`, `aurora-postgresql`, `aurora-mysql` |
-| Версія СУБД | `engine_version` | `"15.4"`, `"8.0"` |
-| Родина параметр-групи (має відповідати engine/engine_version) | `parameter_group_family` | `"postgres15"`, `"aurora-mysql8.0"` |
-| Клас інстансу | `instance_class` | `"db.t3.medium"`, `"db.r6g.large"` |
-| Кількість інстансів в Aurora-кластері | `aurora_instance_count` | `2` (1 writer + 1 reader) |
-| Multi-AZ (лише для звичайної RDS) | `multi_az` | `true` / `false` |
-| Розмір диска (лише RDS) | `allocated_storage`, `max_allocated_storage` | `20`, `100` |
-| Порт | `db_port` | `5432` / `3306` |
-| Додаткові параметри БД | `db_parameters` | `{ max_connections = "200" }` |
-| Доступ до БД | `allowed_cidr_blocks`, `allowed_security_group_ids` | — |
-| Захист від видалення / фінальний снепшот | `deletion_protection`, `skip_final_snapshot` | `true`/`false` |
-
-## Опис усіх змінних
-
-| Змінна | Тип | За замовч. | Опис |
-|---|---|---|---|
-| `name` | `string` | — | Базове ім'я для всіх ресурсів модуля |
-| `use_aurora` | `bool` | `false` | `true` → Aurora Cluster, `false` → standalone RDS |
-| `engine` | `string` | `"postgres"` | СУБД |
-| `engine_version` | `string` | `null` | Версія СУБД |
-| `parameter_group_family` | `string` | — | Family для parameter group |
-| `instance_class` | `string` | `"db.t3.medium"` | Клас інстансу |
-| `multi_az` | `bool` | `false` | Multi-AZ (тільки RDS) |
-| `vpc_id` | `string` | — | VPC для security group |
-| `subnet_ids` | `list(string)` | — | Підмережі для subnet group |
-| `allowed_cidr_blocks` | `list(string)` | `[]` | CIDR з доступом до БД |
-| `allowed_security_group_ids` | `list(string)` | `[]` | SG з доступом до БД |
-| `db_port` | `number` | `5432` | Порт БД |
-| `db_name` | `string` | — | Назва бази даних за замовчуванням |
-| `master_username` | `string` | `"app_admin"` | Master-користувач |
-| `master_password` | `string` | `null` | Master-пароль (якщо `null` — керує Secrets Manager) |
-| `manage_master_user_password` | `bool` | `true` | Автогенерація пароля через Secrets Manager |
-| `allocated_storage` | `number` | `20` | Розмір диска, GB (тільки RDS) |
-| `max_allocated_storage` | `number` | `100` | Ліміт автомасштабування диска (тільки RDS) |
-| `storage_type` | `string` | `"gp3"` | Тип диска (тільки RDS) |
-| `aurora_instance_count` | `number` | `1` | Кількість інстансів в Aurora-кластері |
-| `backup_retention_period` | `number` | `7` | Днів зберігання бекапів |
-| `backup_window` | `string` | `"03:00-04:00"` | Вікно бекапів (UTC) |
-| `maintenance_window` | `string` | `"mon:04:30-mon:05:30"` | Вікно обслуговування (UTC) |
-| `deletion_protection` | `bool` | `false` | Захист від випадкового видалення |
-| `skip_final_snapshot` | `bool` | `true` | Пропустити фінальний снепшот при знищенні |
-| `publicly_accessible` | `bool` | `false` | Публічний доступ до БД |
-| `db_parameters` | `map(string)` | `{}` | Додаткові параметри поверх дефолтних (`max_connections`, `log_statement`, `work_mem`) |
-| `tags` | `map(string)` | `{}` | Спільні теги |
-
-## Outputs модуля
-
-| Output | Опис |
+| Критерій | Де реалізовано |
 |---|---|
-| `endpoint` | Writer endpoint (Aurora) / адреса інстансу (RDS) |
-| `reader_endpoint` | Reader endpoint (тільки Aurora, інакше `null`) |
-| `port` | Порт БД |
-| `security_group_id` | ID security group |
-| `db_subnet_group_name` | Ім'я subnet group |
-| `database_name` / `master_username` | Назва БД / master-юзер |
-| `master_user_secret_arn` | ARN секрету в Secrets Manager (якщо пароль генерується автоматично) |
-| `cluster_id` | ID Aurora-кластера (`null` для RDS) |
-| `cluster_instance_ids` | Список ID інстансів Aurora-кластера |
-| `instance_id` | ID RDS instance (`null` для Aurora) |
+| Коректна архітектура (20) | `modules/vpc` (public/private subnets, NAT, IGW), `modules/eks` |
+| Безпека: VPC/IAM/SG (20) | приватні subnet для нод і RDS, `aws_security_group.db` дозволяє тільки трафік з EKS SG, окремі IAM-ролі cluster/node з мінімально необхідними policy |
+| CI/CD деплой (30) | `Django/Jenkinsfile` (build→test→push ECR→helm upgrade) + `modules/argo_cd` (GitOps sync) |
+| Моніторинг + автомасштабування (20) | `modules/monitoring` (kube-prometheus-stack, metrics-server) + `charts/django-app/templates/hpa.yaml` |
+| Документація (10) | цей README + коментарі в `.tf`/`values.yaml` |
