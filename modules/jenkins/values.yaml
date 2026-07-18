@@ -7,9 +7,6 @@ controller:
     limits:
       cpu: "1"
       memory: "1Gi"
-  installLatestPlugins: false
-  installLatestSpecifiedPlugins: false
-
 persistence:
   enabled: true
   size: "8Gi"
