@@ -13,6 +13,27 @@ variable "target_revision" {
   default = "main"
 }
 
+variable "ecr_repository_url" {
+  type = string
+}
+
+variable "rds_endpoint" {
+  type      = string
+  sensitive = true
+}
+
+variable "rds_port" {
+  type = number
+}
+
+variable "rds_secret_arn" {
+  type = string
+}
+
+variable "django_secret_arn" {
+  type = string
+}
+
 variable "tags" {
   type    = map(string)
   default = {}

@@ -1,8 +1,8 @@
 replicaCount: 2
 
 image:
-  repository: "<ECR_REPOSITORY_URL>"   # filled in by Jenkinsfile at build/deploy time
-  tag: "latest"
+  repository: ""
+  tag: "bootstrap"
   pullPolicy: Always
 
 service:
@@ -27,17 +27,15 @@ autoscaling:
 env:
   DJANGO_SETTINGS_MODULE: "config.settings.production"
   DJANGO_DEBUG: "False"
-  DJANGO_ALLOWED_HOSTS: "*"
+  DJANGO_ALLOWED_HOSTS: "localhost,127.0.0.1"
   DB_NAME: "django_app"
-  DB_HOST: "<RDS_ENDPOINT>"          # filled in from terraform output rds_endpoint
+  DB_HOST: ""
   DB_PORT: "5432"
 
-# Never commit real values here - override via `helm upgrade --set secrets.xxx=...`
-# or a CI-injected values file kept out of git (Jenkinsfile does this).
-secrets:
-  dbUser: ""
-  dbPassword: ""
-  djangoSecretKey: ""
+externalSecrets:
+  refreshInterval: 1h
+  rdsSecretArn: ""
+  djangoSecretArn: ""
 
 livenessProbe:
   path: /healthz/

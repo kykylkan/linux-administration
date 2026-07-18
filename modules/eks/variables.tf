@@ -6,6 +6,11 @@ variable "cluster_version" {
   type = string
 }
 
+variable "cluster_admin_principal_arn" {
+  description = "IAM principal that Terraform grants cluster-admin access"
+  type        = string
+}
+
 variable "vpc_id" {
   type = string
 }

@@ -4,6 +4,17 @@ resource "kubernetes_namespace" "monitoring" {
   }
 }
 
+resource "helm_release" "grafana_external_secret" {
+  name      = "grafana-external-secret"
+  chart     = "${path.module}/charts/grafana-external-secret"
+  namespace = kubernetes_namespace.monitoring.metadata[0].name
+
+  set {
+    name  = "secretArn"
+    value = var.grafana_secret_arn
+  }
+}
+
 # kube-prometheus-stack bundles Prometheus, Grafana, Alertmanager and the
 # metrics-server-compatible adapters used for HPA (autoscaling criterion).
 resource "helm_release" "kube_prometheus_stack" {
@@ -17,6 +28,8 @@ resource "helm_release" "kube_prometheus_stack" {
 
   timeout = 600
   wait    = true
+
+  depends_on = [helm_release.grafana_external_secret]
 }
 
 # Metrics Server is required for HorizontalPodAutoscaler (charts/django-app/hpa.yaml)

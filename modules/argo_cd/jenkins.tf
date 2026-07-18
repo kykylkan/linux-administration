@@ -22,9 +22,9 @@ resource "helm_release" "argocd" {
 # App-of-Apps: a single Argo CD Application that points at charts/ in this
 # repo, which in turn declares the django-app Application/Repository CRs.
 resource "helm_release" "app_of_apps" {
-  name       = "app-of-apps"
-  chart      = "${path.module}/charts"
-  namespace  = kubernetes_namespace.argocd.metadata[0].name
+  name      = "app-of-apps"
+  chart     = "${path.module}/charts"
+  namespace = kubernetes_namespace.argocd.metadata[0].name
 
   set {
     name  = "repoURL"
@@ -34,6 +34,31 @@ resource "helm_release" "app_of_apps" {
   set {
     name  = "targetRevision"
     value = var.target_revision
+  }
+
+  set {
+    name  = "django.imageRepository"
+    value = var.ecr_repository_url
+  }
+
+  set_sensitive {
+    name  = "django.dbHost"
+    value = var.rds_endpoint
+  }
+
+  set {
+    name  = "django.dbPort"
+    value = tostring(var.rds_port)
+  }
+
+  set {
+    name  = "django.rdsSecretArn"
+    value = var.rds_secret_arn
+  }
+
+  set {
+    name  = "django.djangoSecretArn"
+    value = var.django_secret_arn
   }
 
   depends_on = [helm_release.argocd]

@@ -2,10 +2,9 @@ variable "project_name" {
   type = string
 }
 
-variable "engine" {
-  description = "postgres or aurora-postgresql"
-  type        = string
-  default     = "postgres"
+variable "use_aurora" {
+  type    = bool
+  default = false
 }
 
 variable "db_name" {
@@ -17,13 +16,34 @@ variable "db_username" {
   sensitive = true
 }
 
-variable "db_password" {
-  type      = string
-  sensitive = true
-}
-
 variable "instance_class" {
   type = string
+}
+
+variable "postgres_engine_version" {
+  type = string
+}
+
+variable "aurora_engine_version" {
+  type = string
+}
+
+variable "postgres_parameter_group_family" {
+  type = string
+}
+
+variable "aurora_parameter_group_family" {
+  type = string
+}
+
+variable "db_parameters" {
+  type    = map(string)
+  default = {}
+}
+
+variable "aurora_instance_count" {
+  type    = number
+  default = 2
 }
 
 variable "vpc_id" {

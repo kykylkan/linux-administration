@@ -10,6 +10,20 @@ spec:
     repoURL: {{ $.Values.repoURL }}
     targetRevision: {{ $.Values.targetRevision }}
     path: {{ .path }}
+    {{- if eq .name "django-app" }}
+    helm:
+      parameters:
+        - name: image.repository
+          value: {{ $.Values.django.imageRepository | quote }}
+        - name: env.DB_HOST
+          value: {{ $.Values.django.dbHost | quote }}
+        - name: env.DB_PORT
+          value: {{ $.Values.django.dbPort | quote }}
+        - name: externalSecrets.rdsSecretArn
+          value: {{ $.Values.django.rdsSecretArn | quote }}
+        - name: externalSecrets.djangoSecretArn
+          value: {{ $.Values.django.djangoSecretArn | quote }}
+    {{- end }}
   destination:
     server: https://kubernetes.default.svc
     namespace: {{ .namespace }}

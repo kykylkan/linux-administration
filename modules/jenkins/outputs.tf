@@ -10,3 +10,7 @@ output "admin_password_command" {
   description = "Run this after apply to fetch the initial admin password"
   value       = "kubectl exec -n ${var.namespace} -it svc/jenkins -c jenkins -- /bin/cat /run/secrets/additional/chart-admin-password"
 }
+
+output "ecr_push_role_arn" {
+  value = aws_iam_role.ecr_push.arn
+}

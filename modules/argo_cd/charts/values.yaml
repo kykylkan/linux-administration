@@ -1,9 +1,15 @@
-repoURL: https://github.com/<your-github-username>/<your-repo>.git
+repoURL: ""
 targetRevision: main
+
+django:
+  imageRepository: ""
+  dbHost: ""
+  dbPort: "5432"
+  rdsSecretArn: ""
+  djangoSecretArn: ""
 
 repositories:
   - name: final-project
-    url: https://github.com/<your-github-username>/<your-repo>.git
 
 applications:
   - name: django-app

@@ -1,13 +1,11 @@
-version: "3.9"
-
 services:
   db:
     image: postgres:16
     restart: unless-stopped
     environment:
-      POSTGRES_DB: django_app
-      POSTGRES_USER: django_admin
-      POSTGRES_PASSWORD: local_dev_password
+      POSTGRES_DB: ${DB_NAME:-django_app}
+      POSTGRES_USER: ${DB_USER:-django_admin}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in .env}
     volumes:
       - db_data:/var/lib/postgresql/data
     ports:
@@ -23,13 +21,13 @@ services:
     environment:
       DJANGO_SETTINGS_MODULE: config.settings.production
       DJANGO_DEBUG: "True"
-      DJANGO_ALLOWED_HOSTS: "*"
-      DB_NAME: django_app
-      DB_USER: django_admin
-      DB_PASSWORD: local_dev_password
+      DJANGO_ALLOWED_HOSTS: ${DJANGO_ALLOWED_HOSTS:-localhost,127.0.0.1}
+      DB_NAME: ${DB_NAME:-django_app}
+      DB_USER: ${DB_USER:-django_admin}
+      DB_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in .env}
       DB_HOST: db
       DB_PORT: "5432"
-      SECRET_KEY: local-dev-secret-key
+      SECRET_KEY: ${SECRET_KEY:?Set SECRET_KEY in .env}
     ports:
       - "8000:8000"
 

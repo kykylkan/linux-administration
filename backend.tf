@@ -2,11 +2,9 @@ terraform {
   required_version = ">= 1.5.0"
 
   backend "s3" {
-    bucket         = "devops-final-project-tfstate"
-    key            = "final-project/terraform.tfstate"
-    region         = "eu-central-1"
-    dynamodb_table = "devops-final-project-tf-lock"
-    encrypt        = true
+    key     = "final-project/terraform.tfstate"
+    region  = "eu-central-1"
+    encrypt = true
   }
 
   required_providers {
@@ -21,6 +19,14 @@ terraform {
     helm = {
       source  = "hashicorp/helm"
       version = "~> 2.12"
+    }
+    tls = {
+      source  = "hashicorp/tls"
+      version = "~> 4.0"
+    }
+    random = {
+      source  = "hashicorp/random"
+      version = "~> 3.6"
     }
   }
 }

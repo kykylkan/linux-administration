@@ -1,94 +1,169 @@
-# DevOps Final Project — AWS + EKS + CI/CD + Monitoring
+# DevOps Final Project — AWS, EKS і GitOps
 
-Terraform-провізована інфраструктура на AWS: VPC, EKS, RDS, ECR, Jenkins,
-Argo CD, Prometheus/Grafana, і Django-застосунок, що деплоїться через
-Jenkins (build/push) + Argo CD (GitOps sync) у кластер EKS.
+Terraform створює VPC, EKS, ECR, PostgreSQL RDS або Aurora, Jenkins,
+Argo CD, External Secrets Operator та Prometheus/Grafana. Django
+розгортається тільки через Argo CD.
 
-## Структура
+## Найпростіший запуск
 
-Відповідає структурі з ТЗ: `main.tf` / `backend.tf` / `outputs.tf` в корені,
-усі ресурси розкладені по `modules/*`, Helm-чарт застосунку — у
-`charts/django-app`, чарт Argo CD App-of-Apps — у
-`modules/argo_cd/charts`, вихідний код Django — у `Django/`.
+На macOS запустіть:
 
-## Порядок запуску (bootstrap)
+```bash
+./scripts/deploy.sh
+```
 
-Backend S3+DynamoDB створюється тим самим кодом, який його потім
-використовує — класична проблема "курки і яйця" в Terraform. Порядок:
+Скрипт перевірить і запропонує встановити Homebrew, AWS CLI, Terraform,
+kubectl та Helm. Потім він попросить AWS credentials і URL публічного
+GitHub repository, створить унікальний S3 backend, розгорне інфраструктуру
+та налаштує kubectl.
 
-1. **Перший прогін — локальний state.** Закоментуйте блок `backend "s3"`
-   у `backend.tf`, залиште лише `required_providers`.
-   ```bash
-   terraform init
-   terraform apply -target=module.s3_backend
-   ```
-2. **Міграція state в S3.** Розкоментуйте `backend "s3"` (бакет і таблиця
-   вже існують — назви збігаються з `${project_name}-tfstate` /
-   `${project_name}-tf-lock`), потім:
-   ```bash
-   terraform init -migrate-state
-   ```
-3. **Повне розгортання інфраструктури:**
-   ```bash
-   terraform apply
-   ```
-   Це підніме VPC → EKS → ECR/RDS → Jenkins/Argo CD/Monitoring (Helm-релізи
-   в модулях залежать від `module.eks` через `depends_on`, тож порядок
-   витримується автоматично).
+Скрипт не просить GitHub token: його потрібно один раз додати безпосередньо
+в Jenkins після деплою, щоб token не потрапив у Terraform state або файл.
 
-4. **kubeconfig:**
-   ```bash
-   aws eks update-kubeconfig --region eu-central-1 --name devops-final-eks
-   ```
+## Архітектура CI/CD
 
-5. **Перевірка ресурсів:**
-   ```bash
-   kubectl get all -n jenkins
-   kubectl get all -n argocd
-   kubectl get all -n monitoring
-   ```
+```text
+Git push → Jenkins tests → immutable image → ECR
+                                      ↓
+Jenkins updates charts/django-app/values.yaml
+                                      ↓
+                     Argo CD automated sync → EKS
+```
 
-6. **Доступ до сервісів:**
-   ```bash
-   kubectl port-forward svc/jenkins 8080:8080 -n jenkins
-   kubectl port-forward svc/argocd-server 8081:443 -n argocd
-   kubectl port-forward svc/monitoring-grafana 3000:80 -n monitoring
-   ```
-   - Jenkins admin-пароль: `modules/jenkins` → output `admin_password_command`.
-   - Argo CD admin-пароль: `modules/argo_cd` → output `initial_admin_password_command`.
-   - Grafana: логін `admin`, пароль — значення `grafana.adminPassword` у
-     `modules/monitoring/values.yaml` (замініть перед реальним деплоєм).
+Jenkins не виконує `helm upgrade`. Це усуває конфлікт із Argo CD
+`selfHeal`. ECR repository URL передається в Jenkins через Terraform/JCasC,
+а ECR URL і RDS address/port — у Django Application через Helm parameters.
 
-7. **CI/CD цикл:** пуш у `main` → Jenkins (`Django/Jenkinsfile`) білдить
-   образ, пушить в ECR, оновлює Helm-values і синхронізує через Argo CD
-   (`modules/argo_cd` App-of-Apps стежить за `charts/django-app`).
+## Bootstrap Terraform state
 
-## Перед `terraform apply` заповніть
+State backend має окремий lifecycle у `bootstrap/`. `backend.tf` використовує
+partial backend configuration: конкретні S3/DynamoDB names передаються в
+`terraform init`. `scripts/deploy.sh` формує унікальні назви з AWS account ID.
 
-- `db_password` — через `TF_VAR_db_password` або `terraform.tfvars`
-  (не комітити!).
-- `argocd_repo_url` — URL цього репозиторію (використовується Argo CD і
-  `modules/argo_cd/charts/values.yaml`).
-- `charts/django-app/values.yaml` → `image.repository` і `env.DB_HOST`
-  підставляються автоматично з Jenkinsfile / terraform output, але для
-  ручного `helm install` їх треба виставити самому.
-- Jenkins credentials `ecr-repo-url`, `db-password` — створити в
-  Jenkins UI (Credentials store) перед першим прогоном пайплайну.
+Для ручного запуску:
 
-## ⚠️ Видалення ресурсів
+```bash
+ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
+STATE_BUCKET="devops-final-${ACCOUNT_ID}-tfstate"
+LOCK_TABLE="devops-final-${ACCOUNT_ID}-tf-lock"
+
+terraform -chdir=bootstrap init
+terraform -chdir=bootstrap apply \
+  -var="state_bucket_name=${STATE_BUCKET}" \
+  -var="lock_table_name=${LOCK_TABLE}"
+
+terraform init -reconfigure \
+  -backend-config="bucket=${STATE_BUCKET}" \
+  -backend-config="dynamodb_table=${LOCK_TABLE}" \
+  -backend-config="region=eu-central-1"
+```
+
+Ресурси state мають `prevent_destroy` і не входять до основного
+`terraform destroy`.
+
+## Налаштування
+
+Перед застосуванням задайте URL цього Git-репозиторію:
+
+```bash
+terraform apply \
+  -var='argocd_repo_url=https://github.com/OWNER/REPOSITORY.git'
+```
+
+Наведений Argo CD Repository Secret розрахований на public repository. Для
+private repository додайте repository credential у Argo CD окремо, не
+зберігаючи token у Git або Terraform variables.
+
+Для Aurora:
+
+```bash
+terraform apply -var='use_aurora=true'
+```
+
+RDS сам створює master credentials у AWS Secrets Manager. Terraform також
+генерує окремі Django і Grafana secrets. External Secrets Operator читає
+тільки ці ARN через IRSA та створює Kubernetes Secrets. Секретні значення
+не зберігаються в Git або Helm values.
+
+## IAM та IRSA
+
+- EKS node role має `AmazonEC2ContainerRegistryReadOnly` лише для pull.
+- Jenkins service account має окрему least-privilege role для push у
+  конкретний ECR repository.
+- EBS CSI controller має окрему AWS-managed IRSA policy.
+- External Secrets service account має read-доступ тільки до трьох
+  application secrets.
+
+Перевірка:
+
+```bash
+terraform output jenkins_ecr_push_role_arn
+terraform output external_secrets_role_arn
+kubectl get serviceaccount jenkins -n jenkins -o yaml
+kubectl get serviceaccount external-secrets -n external-secrets -o yaml
+```
+
+## Jenkins
+
+Створіть Pipeline/Multibranch job із Script Path `Django/Jenkinsfile`.
+Додайте один Jenkins credential:
+
+- ID `git-write-credentials`
+- тип `Username with password`
+- username GitHub username
+- password GitHub token із правом запису в репозиторій
+
+AWS static credentials, ECR URL і DB password у Jenkins не потрібні.
+Pipeline використовує IRSA, пушить лише commit SHA tag і комітить новий
+`image.tag` із `[skip ci]`.
+
+## RDS
+
+`use_aurora=false` створює standalone PostgreSQL, `true` — Aurora
+PostgreSQL. Обидва варіанти мають parameter groups. Параметри можна
+перевизначити через `db_parameters`; версії, parameter group families та
+кількість Aurora instances винесені у variables.
+
+```bash
+terraform output -raw rds_endpoint
+terraform output rds_port
+terraform output rds_master_user_secret_arn
+```
+
+## Доступ і перевірка
+
+```bash
+aws eks update-kubeconfig --region eu-central-1 --name devops-final-eks
+kubectl get nodes
+kubectl get pods -A
+kubectl get externalsecrets -A
+kubectl get application django-app -n argocd
+
+kubectl port-forward svc/jenkins 8080:8080 -n jenkins
+kubectl port-forward svc/argocd-server 8081:443 -n argocd
+kubectl port-forward svc/monitoring-grafana 3000:80 -n monitoring
+kubectl port-forward svc/django-app 8000:80
+curl http://localhost:8000/readyz/
+```
+
+Grafana credentials отримуються без виведення в репозиторій:
+
+```bash
+kubectl get secret grafana-admin -n monitoring \
+  -o jsonpath='{.data.admin-password}' | base64 -d
+```
+
+## Видалення
 
 ```bash
 terraform destroy
 ```
-Видаляє все, включно з S3-бакетом/DynamoDB стейту — після цього стейт
-локальний, наступний `apply` знову починайте з кроку 1.
 
-## Відповідність критеріям оцінювання
+Ця команда не видаляє bootstrap state. Для свідомого видалення S3/DynamoDB
+спочатку окремо приберіть `prevent_destroy` у bootstrap stack.
 
-| Критерій | Де реалізовано |
-|---|---|
-| Коректна архітектура (20) | `modules/vpc` (public/private subnets, NAT, IGW), `modules/eks` |
-| Безпека: VPC/IAM/SG (20) | приватні subnet для нод і RDS, `aws_security_group.db` дозволяє тільки трафік з EKS SG, окремі IAM-ролі cluster/node з мінімально необхідними policy |
-| CI/CD деплой (30) | `Django/Jenkinsfile` (build→test→push ECR→helm upgrade) + `modules/argo_cd` (GitOps sync) |
-| Моніторинг + автомасштабування (20) | `modules/monitoring` (kube-prometheus-stack, metrics-server) + `charts/django-app/templates/hpa.yaml` |
-| Документація (10) | цей README + коментарі в `.tf`/`values.yaml` |
+## Докази деплою
+
+Чекліст обов'язкових реальних скриншотів і безпечних команд знаходиться в
+`docs/deploy-evidence/README.md`. Скриншоти треба зробити після деплою у
+власному AWS account; секрети й account identifiers слід замаскувати.

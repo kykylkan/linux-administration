@@ -43,7 +43,7 @@ variable "azs" {
 variable "eks_cluster_version" {
   description = "Kubernetes version for the EKS cluster"
   type        = string
-  default     = "1.29"
+  default     = "1.33"
 }
 
 variable "eks_node_instance_types" {
@@ -67,10 +67,10 @@ variable "eks_node_max_size" {
   default = 4
 }
 
-variable "db_engine" {
-  description = "postgres or aurora-postgresql"
-  type        = string
-  default     = "postgres"
+variable "use_aurora" {
+  description = "Create an Aurora PostgreSQL cluster instead of a standalone RDS instance"
+  type        = bool
+  default     = false
 }
 
 variable "db_name" {
@@ -84,15 +84,43 @@ variable "db_username" {
   sensitive = true
 }
 
-variable "db_password" {
-  description = "Master password for RDS. Override via TF_VAR_db_password or a tfvars file kept out of git."
-  type        = string
-  sensitive   = true
-}
-
 variable "db_instance_class" {
   type    = string
   default = "db.t3.medium"
+}
+
+variable "postgres_engine_version" {
+  type    = string
+  default = "16.14"
+}
+
+variable "aurora_engine_version" {
+  type    = string
+  default = "15.17"
+}
+
+variable "postgres_parameter_group_family" {
+  type    = string
+  default = "postgres16"
+}
+
+variable "aurora_parameter_group_family" {
+  type    = string
+  default = "aurora-postgresql15"
+}
+
+variable "db_parameters" {
+  description = "PostgreSQL parameters applied to the selected database"
+  type        = map(string)
+  default = {
+    log_statement = "ddl"
+    work_mem      = "16384"
+  }
+}
+
+variable "aurora_instance_count" {
+  type    = number
+  default = 2
 }
 
 variable "ecr_repository_name" {
@@ -103,7 +131,6 @@ variable "ecr_repository_name" {
 variable "argocd_repo_url" {
   description = "Git repository URL that Argo CD will track for app manifests (this repo, charts/ path)"
   type        = string
-  default     = "https://github.com/<your-github-username>/<your-repo>.git"
 }
 
 variable "tags" {

@@ -19,12 +19,25 @@ output "rds_endpoint" {
   sensitive = true
 }
 
-output "s3_state_bucket" {
-  value = module.s3_backend.bucket_name
+output "rds_reader_endpoint" {
+  value     = module.rds.reader_endpoint
+  sensitive = true
 }
 
-output "dynamodb_lock_table" {
-  value = module.s3_backend.dynamodb_table_name
+output "rds_port" {
+  value = module.rds.port
+}
+
+output "rds_master_user_secret_arn" {
+  value = module.rds.master_user_secret_arn
+}
+
+output "jenkins_ecr_push_role_arn" {
+  value = module.jenkins.ecr_push_role_arn
+}
+
+output "external_secrets_role_arn" {
+  value = module.external_secrets.role_arn
 }
 
 output "kubeconfig_command" {

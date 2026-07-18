@@ -7,3 +7,7 @@ variable "tags" {
   type    = map(string)
   default = {}
 }
+
+variable "grafana_secret_arn" {
+  type = string
+}

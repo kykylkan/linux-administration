@@ -1,4 +1,10 @@
 .env
+.env.*
+!.env.example
+.deploy.env
+*.tfvars
+*.tfvars.json
+.terraform/
 __pycache__/
 *.pyc
 *.pyo

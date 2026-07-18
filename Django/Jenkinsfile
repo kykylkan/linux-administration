@@ -7,18 +7,15 @@ pipeline {
 apiVersion: v1
 kind: Pod
 spec:
+  serviceAccountName: jenkins
   containers:
   - name: docker
     image: docker:24-dind
     securityContext:
       privileged: true
     tty: true
-  - name: awscli
-    image: amazon/aws-cli:2.15.0
-    command: ['cat']
-    tty: true
-  - name: helm
-    image: alpine/helm:3.14.4
+  - name: python
+    image: python:3.12-slim
     command: ['cat']
     tty: true
 """
@@ -27,66 +24,113 @@ spec:
 
     environment {
         AWS_REGION      = 'eu-central-1'
-        ECR_REPO        = credentials('ecr-repo-url')
-        IMAGE_TAG       = "${env.GIT_COMMIT.take(7)}"
         ARGOCD_APP_NAME = 'django-app'
+        SKIP_PIPELINE   = 'false'
     }
 
     options {
         timestamps()
         disableConcurrentBuilds()
+        skipDefaultCheckout(true)
     }
 
     stages {
         stage('Checkout') {
             steps {
                 checkout scm
+                script {
+                    env.IMAGE_TAG = sh(
+                        script: 'git rev-parse --short=7 HEAD',
+                        returnStdout: true
+                    ).trim()
+                    env.SKIP_PIPELINE = sh(
+                        script: 'git log -1 --pretty=%ae',
+                        returnStdout: true
+                    ).trim() == 'jenkins@localhost' ? 'true' : 'false'
+                }
             }
         }
 
         stage('Lint & Unit Tests') {
+            when {
+                expression { env.SKIP_PIPELINE != 'true' }
+            }
             steps {
-                sh '''
-                    cd Django/app
-                    pip install --no-cache-dir -r requirements.txt
-                    python manage.py test || true
-                '''
+                container('python') {
+                    sh '''
+                        cd Django/app
+                        pip install --no-cache-dir -r requirements.txt
+                        python manage.py check
+                        python manage.py test
+                    '''
+                }
             }
         }
 
         stage('Build Image') {
+            when {
+                expression { env.SKIP_PIPELINE != 'true' }
+            }
             steps {
-                sh """
-                    docker build -t \$ECR_REPO:\$IMAGE_TAG -t \$ECR_REPO:latest -f Django/Dockerfile Django
-                """
+                sh 'docker build -t $ECR_REPO:$IMAGE_TAG -f Django/Dockerfile Django'
             }
         }
 
         stage('Push to ECR') {
+            when {
+                expression { env.SKIP_PIPELINE != 'true' }
+            }
             steps {
-                container('awscli') {
-                    sh '''
-                        aws ecr get-login-password --region $AWS_REGION \
-                          | docker login --username AWS --password-stdin $ECR_REPO
-                    '''
-                }
                 sh '''
+                    apk add --no-cache aws-cli
+                    ECR_REGISTRY="${ECR_REPO%/*}"
+                    aws ecr get-login-password --region "$AWS_REGION" \
+                      | docker login --username AWS --password-stdin "$ECR_REGISTRY"
                     docker push $ECR_REPO:$IMAGE_TAG
-                    docker push $ECR_REPO:latest
                 '''
             }
         }
 
-        stage('Update Helm values & sync via Argo CD') {
+        stage('Update GitOps image tag') {
+            when {
+                expression { env.SKIP_PIPELINE != 'true' }
+            }
             steps {
-                container('helm') {
-                    withCredentials([string(credentialsId: 'db-password', variable: 'DB_PASSWORD')]) {
+                container('python') {
+                    withCredentials([usernamePassword(
+                        credentialsId: 'git-write-credentials',
+                        usernameVariable: 'GIT_USERNAME',
+                        passwordVariable: 'GIT_TOKEN'
+                    )]) {
                         sh '''
-                            helm upgrade --install django-app ./charts/django-app \
-                              --namespace default --create-namespace \
-                              --set image.repository=$ECR_REPO \
-                              --set image.tag=$IMAGE_TAG \
-                              --set secrets.dbPassword=$DB_PASSWORD
+                            python - <<'PY'
+                            from pathlib import Path
+                            import os
+                            import re
+
+                            values_path = Path("charts/django-app/values.yaml")
+                            values = values_path.read_text()
+                            updated = re.sub(
+                                r'(image:\n(?:  .*\n)*?  tag:)\s*".*?"',
+                                rf'\1 "{os.environ["IMAGE_TAG"]}"',
+                                values,
+                                count=1,
+                            )
+                            if updated == values:
+                                raise SystemExit("Unable to update image.tag")
+                            values_path.write_text(updated)
+                            PY
+
+                            apt-get update
+                            apt-get install -y --no-install-recommends git
+                            rm -rf /var/lib/apt/lists/*
+                            git config user.name "Jenkins"
+                            git config user.email "jenkins@localhost"
+                            git add charts/django-app/values.yaml
+                            git commit -m "chore: deploy $IMAGE_TAG [skip ci]"
+                            REPO_URL="$(git config --get remote.origin.url)"
+                            AUTH_URL="https://${GIT_USERNAME}:${GIT_TOKEN}@${REPO_URL#https://}"
+                            git push "$AUTH_URL" HEAD:main
                         '''
                     }
                 }
@@ -96,13 +140,21 @@ spec:
 
     post {
         success {
-            echo "Deployed ${env.ECR_REPO}:${env.IMAGE_TAG} successfully."
+            script {
+                if (env.SKIP_PIPELINE == 'true') {
+                    echo 'Skipped Jenkins-authored GitOps commit.'
+                } else {
+                    echo "Published ${env.ECR_REPO}:${env.IMAGE_TAG}; Argo CD will sync the Git change."
+                }
+            }
         }
         failure {
             echo 'Pipeline failed - check stage logs above.'
         }
         always {
-            sh 'docker system prune -f || true'
+            container('docker') {
+                sh 'docker system prune -f || true'
+            }
         }
     }
 }

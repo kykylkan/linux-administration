@@ -8,6 +8,6 @@ metadata:
     argocd.argoproj.io/secret-type: repository
 stringData:
   type: git
-  url: {{ .url }}
+  url: {{ $.Values.repoURL }}
 ---
 {{- end }}
