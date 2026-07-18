@@ -116,46 +116,46 @@ spec:
                         passwordVariable: 'GIT_TOKEN'
                     )]) {
                         sh '''
-                            python - <<'PY'
-                            from pathlib import Path
-                            import os
+python - <<'PY'
+from pathlib import Path
+import os
 
-                            values_path = Path("charts/django-app/values.yaml")
-                            lines = values_path.read_text().splitlines()
-                            image_section_found = False
-                            image_tag_updated = False
+values_path = Path("charts/django-app/values.yaml")
+lines = values_path.read_text().splitlines()
+image_section_found = False
+image_tag_updated = False
 
-                            for index, line in enumerate(lines):
-                                if line == "image:":
-                                    image_section_found = True
-                                    continue
+for index, line in enumerate(lines):
+    if line == "image:":
+        image_section_found = True
+        continue
 
-                                if image_section_found and line.startswith("  tag:"):
-                                    lines[index] = f'  tag: "{os.environ["IMAGE_TAG"]}"'
-                                    image_tag_updated = True
-                                    break
+    if image_section_found and line.startswith("  tag:"):
+        lines[index] = f'  tag: "{os.environ["IMAGE_TAG"]}"'
+        image_tag_updated = True
+        break
 
-                                if image_section_found and line and not line.startswith(" "):
-                                    break
+    if image_section_found and line and not line.startswith(" "):
+        break
 
-                            if not image_tag_updated:
-                                raise SystemExit("Unable to update image.tag")
+if not image_tag_updated:
+    raise SystemExit("Unable to update image.tag")
 
-                            values_path.write_text(chr(10).join(lines) + chr(10))
-                            PY
+values_path.write_text(chr(10).join(lines) + chr(10))
+PY
 
-                            apt-get update
-                            apt-get install -y --no-install-recommends git
-                            rm -rf /var/lib/apt/lists/*
-                            git config --global --add safe.directory "$WORKSPACE"
-                            git config user.name "Jenkins"
-                            git config user.email "jenkins@localhost"
-                            git add charts/django-app/values.yaml
-                            git commit -m "chore: deploy $IMAGE_TAG [skip ci]"
-                            REPO_URL="$(git config --get remote.origin.url)"
-                            AUTH_URL="https://${GIT_USERNAME}:${GIT_TOKEN}@${REPO_URL#https://}"
-                            git push "$AUTH_URL" HEAD:main
-                        '''
+apt-get update
+apt-get install -y --no-install-recommends git
+rm -rf /var/lib/apt/lists/*
+git config --global --add safe.directory "$WORKSPACE"
+git config user.name "Jenkins"
+git config user.email "jenkins@localhost"
+git add charts/django-app/values.yaml
+git commit -m "chore: deploy $IMAGE_TAG [skip ci]"
+REPO_URL="$(git config --get remote.origin.url)"
+AUTH_URL="https://${GIT_USERNAME}:${GIT_TOKEN}@${REPO_URL#https://}"
+git push "$AUTH_URL" HEAD:main
+'''
                     }
                 }
             }
