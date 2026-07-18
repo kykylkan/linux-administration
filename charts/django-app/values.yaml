@@ -2,7 +2,7 @@ replicaCount: 2
 
 image:
   repository: ""
-  tag: "bootstrap"
+  tag: "dc6894b"
   pullPolicy: Always
 
 service:
