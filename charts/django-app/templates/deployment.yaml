@@ -31,11 +31,17 @@ spec:
             httpGet:
               path: {{ .Values.livenessProbe.path }}
               port: {{ .Values.service.targetPort }}
+              httpHeaders:
+                - name: Host
+                  value: localhost
             initialDelaySeconds: {{ .Values.livenessProbe.initialDelaySeconds }}
             periodSeconds: {{ .Values.livenessProbe.periodSeconds }}
           readinessProbe:
             httpGet:
               path: {{ .Values.readinessProbe.path }}
               port: {{ .Values.service.targetPort }}
+              httpHeaders:
+                - name: Host
+                  value: localhost
             initialDelaySeconds: {{ .Values.readinessProbe.initialDelaySeconds }}
             periodSeconds: {{ .Values.readinessProbe.periodSeconds }}
