@@ -37,6 +37,7 @@ spec:
         stage('Checkout') {
             steps {
                 checkout scm
+                sh 'git config --global --add safe.directory "$WORKSPACE"'
                 script {
                     env.IMAGE_TAG = sh(
                         script: 'git rev-parse --short=7 HEAD',
@@ -133,6 +134,7 @@ spec:
                             apt-get update
                             apt-get install -y --no-install-recommends git
                             rm -rf /var/lib/apt/lists/*
+                            git config --global --add safe.directory "$WORKSPACE"
                             git config user.name "Jenkins"
                             git config user.email "jenkins@localhost"
                             git add charts/django-app/values.yaml
