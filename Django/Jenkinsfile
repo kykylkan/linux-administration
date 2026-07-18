@@ -18,6 +18,10 @@ spec:
     image: python:3.12-slim
     command: ['cat']
     tty: true
+  - name: awscli
+    image: amazon/aws-cli:2.15.57
+    command: ['cat']
+    tty: true
 """
         }
     }
@@ -81,13 +85,22 @@ spec:
                 expression { env.SKIP_PIPELINE != 'true' }
             }
             steps {
-                sh '''
-                    apk add --no-cache aws-cli
+                container('awscli') {
+                    sh '''
+                        umask 077
+                        aws ecr get-login-password --region "$AWS_REGION" \
+                          > "$WORKSPACE/.ecr-password"
+                    '''
+                }
+                container('docker') {
+                    sh '''
+                    trap 'rm -f "$WORKSPACE/.ecr-password"' EXIT
                     ECR_REGISTRY="${ECR_REPO%/*}"
-                    aws ecr get-login-password --region "$AWS_REGION" \
-                      | docker login --username AWS --password-stdin "$ECR_REGISTRY"
+                    docker login --username AWS --password-stdin "$ECR_REGISTRY" \
+                      < "$WORKSPACE/.ecr-password"
                     docker push $ECR_REPO:$IMAGE_TAG
-                '''
+                    '''
+                }
             }
         }
 
