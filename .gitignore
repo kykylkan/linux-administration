@@ -10,6 +10,7 @@
 __pycache__/
 *.pyc
 *.pyo
+*.class
 db.sqlite3
 staticfiles/
 .DS_Store

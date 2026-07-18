@@ -106,19 +106,29 @@ spec:
                             python - <<'PY'
                             from pathlib import Path
                             import os
-                            import re
 
                             values_path = Path("charts/django-app/values.yaml")
-                            values = values_path.read_text()
-                            updated = re.sub(
-                                r'(image:\n(?:  .*\n)*?  tag:)\s*".*?"',
-                                rf'\1 "{os.environ["IMAGE_TAG"]}"',
-                                values,
-                                count=1,
-                            )
-                            if updated == values:
+                            lines = values_path.read_text().splitlines()
+                            image_section_found = False
+                            image_tag_updated = False
+
+                            for index, line in enumerate(lines):
+                                if line == "image:":
+                                    image_section_found = True
+                                    continue
+
+                                if image_section_found and line.startswith("  tag:"):
+                                    lines[index] = f'  tag: "{os.environ["IMAGE_TAG"]}"'
+                                    image_tag_updated = True
+                                    break
+
+                                if image_section_found and line and not line.startswith(" "):
+                                    break
+
+                            if not image_tag_updated:
                                 raise SystemExit("Unable to update image.tag")
-                            values_path.write_text(updated)
+
+                            values_path.write_text(chr(10).join(lines) + chr(10))
                             PY
 
                             apt-get update
