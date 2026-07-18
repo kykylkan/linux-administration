@@ -4,6 +4,8 @@
 .deploy.env
 *.tfvars
 *.tfvars.json
+*.tfstate
+*.tfstate.*
 .terraform/
 __pycache__/
 *.pyc

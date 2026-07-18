@@ -36,7 +36,7 @@ resource "helm_release" "jenkins" {
     }),
   ]
 
-  timeout = 600
+  timeout = 900
   wait    = true
 
   depends_on = [aws_iam_role_policy.ecr_push]

@@ -43,6 +43,27 @@ provider "helm" {
   }
 }
 
+resource "kubernetes_storage_class_v1" "gp3" {
+  metadata {
+    name = "gp3"
+    annotations = {
+      "storageclass.kubernetes.io/is-default-class" = "true"
+    }
+  }
+
+  storage_provisioner    = "ebs.csi.aws.com"
+  reclaim_policy         = "Delete"
+  volume_binding_mode    = "WaitForFirstConsumer"
+  allow_volume_expansion = true
+
+  parameters = {
+    type      = "gp3"
+    encrypted = "true"
+  }
+
+  depends_on = [module.eks]
+}
+
 module "vpc" {
   source               = "./modules/vpc"
   project_name         = var.project_name
@@ -127,7 +148,7 @@ module "jenkins" {
   oidc_provider_url  = module.eks.oidc_provider_url
   tags               = var.tags
 
-  depends_on = [module.eks]
+  depends_on = [module.eks, kubernetes_storage_class_v1.gp3]
 }
 
 module "argo_cd" {
@@ -141,7 +162,10 @@ module "argo_cd" {
   rds_secret_arn     = module.rds.master_user_secret_arn
   django_secret_arn  = module.secrets.django_secret_arn
 
-  depends_on = [module.eks, module.external_secrets]
+  depends_on = [
+    module.eks,
+    module.external_secrets,
+  ]
 }
 
 module "monitoring" {
@@ -150,5 +174,9 @@ module "monitoring" {
   grafana_secret_arn = module.secrets.grafana_secret_arn
   tags               = var.tags
 
-  depends_on = [module.eks, module.external_secrets]
+  depends_on = [
+    module.eks,
+    module.external_secrets,
+    kubernetes_storage_class_v1.gp3,
+  ]
 }

@@ -26,7 +26,7 @@ resource "helm_release" "kube_prometheus_stack" {
 
   values = [file("${path.module}/values.yaml")]
 
-  timeout = 600
+  timeout = 900
   wait    = true
 
   depends_on = [helm_release.grafana_external_secret]

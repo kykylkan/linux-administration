@@ -1,7 +1,7 @@
 output "state_bucket_name" {
-  value = aws_s3_bucket.terraform_state.id
+  value = module.s3_backend.bucket_name
 }
 
 output "lock_table_name" {
-  value = aws_dynamodb_table.terraform_locks.name
+  value = module.s3_backend.dynamodb_table_name
 }

@@ -1,0 +1,3 @@
+aws_region      = "eu-central-1"
+argocd_repo_url = "https://github.com/kykylkan/linux-administration.git"
+use_aurora      = false
